@@ -1,6 +1,6 @@
 from setuptools import setup
 
-from meta import config
+from anaphora.meta import config
 
 setup(
     name = "anaphora",

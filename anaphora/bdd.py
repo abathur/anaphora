@@ -1,4 +1,4 @@
-import traceback, sys, inspect, datetime, sqlite3
+import traceback, sys, inspect, datetime, sqlite3, resource, itertools
 from collections import defaultdict
 import coverage
 from anaphora import meta, cover
@@ -11,98 +11,524 @@ class CONSTANTS(object):
 	DURING = 3
 	TEARDOWN = 4
 
-class AnaphoraError(Exception):pass
-class TestRunError(AnaphoraError):
-	def __init__(self, errmess, node):
-		super().__init__(errmess % node)
-		self.node = node
-class HookError(TestRunError):pass
-class BeforeHookError(HookError):pass
-class AfterHookError(HookError):pass
-class TestError(TestRunError):pass
-
-class RuntimeStats(CONSTANTS):
-	runtime = None
-	_checkpoint = None
-	exceptions = None
-	successes = defaultdict(int)
-	failures = defaultdict(int)
-	succeeded = 0
-	failed = 0
-	db = sqlite3.connect(':memory:')
-
-	#stat keys
-	EXCEPTIONS = 0
-	SUCCESSES = 1
-	FAILURES = 2
-
-	#exception keys
-	EXCEPTION_TYPE = 0
-	EXCEPTION_VALUE = 1
-	EXCEPTION_TRACEBACK = 2
-	EXCEPTION_LABELS = {EXCEPTION_TYPE: "exception type", EXCEPTION_VALUE: "exception value", EXCEPTION_TRACEBACK: "exception traceback"}
-
-	STAT_LABELS = ["exceptions","successes","failures"]
-	RUNTIME_LABELS = ["before","after","setup","during","teardown"]
-
-	def __init__(self):
-		self.runtime = [datetime.timedelta() for x in range(5)]
-		self._checkpoint = datetime.datetime.utcnow()
-		self.exceptions = []
-
-	def checkpoint(self, name):
-		self.runtime[name] = datetime.datetime.utcnow() - self._checkpoint
-		self._checkpoint = datetime.datetime.utcnow()
-
-	def succeed(self, name):
-		self.successes[name] += 1
-		self.succeeded += 1
-
-	def fail(self, name):
-		self.failures[name] += 1
-		self.failed += 1
-
-	def stats(self, verbose=False):
-		"""Return a list or dict of our statistics."""
-		if verbose:
-			return {x:y for x,y in zip([self.exceptions, self.successes, self.failures], self.STAT_LABELS)}
-		else:
-			return [self.exceptions, self.successes, self.failures, self.succeeded, self.failed]
-
-	def runtimes(self, verbose=False):
-		"""Return a list (optionally a dict) of runtimes in float seconds."""
-		if verbose:
-			return {x.total_seconds():y for x,y in zip(self.runtime, self.RUNTIME_LABELS)}
-		else:
-			return [x.total_seconds() for x in self.runtime]
-
-	def hook_overhead(self):
-		return self.runtime[self.BEFORE].total_seconds() + self.runtime[self.AFTER].total_seconds()
-
-	def anaphora_overhead(self):
-		return self.runtime[self.SETUP].total_seconds() + self.runtime[self.TEARDOWN].total_seconds()
-
-	def test_time(self):
-		self.runtime[self.DURING].total_seconds()
-
-	def run_time(self):
-		return sum(self.runtimes())
-"""
-	terms:
-	hook overhead = tover = before hooks, after hooks
-	anaphora overhead = fover = setup, teardown or sum - before/after hooks and during
-
-	There are a lot of ways to give any detail on runtime:
-	- sum(runtimes); this includes time we waste and time you waste
-	- sum(runtimes) (%overhead)
-	- sum(runtimes) (overhead)
-	- during + sum(before, after, setup, teardown (collectively "overhead"))
-	- ...
-
-	So perhaps it's better to think in terms of what this information would give me and the scenarios under which I want it. I want to know how long my tests take to run in total, and I want to know where there are slow tests. And when there are slow test trees, I want a sense of how much of the time spent there I am responsible for (i.e., what portion I can actually save myself, and what portion is hidden in the framework.)
+#exception mixins
+class Benign(object):
 	"""
+	Benign exceptions are less serious than warnings.
 
-class Noun(CONSTANTS):
+	Example: assertion failure in a test.
+	"""
+	severity = "Benign exception"
+	terminal = False
+class Critical(object):
+	"""
+	Critical exceptions aren't quite fatal.
+
+	The best distinction here is that these should probably be treated
+	as fatal for developers testing what they're building, but a
+	downstream user shouldn't be required to fix the exception before
+	they can see what tests pass or fail.
+	"""
+	severity = "Critical error"
+
+	#chicken and egg; config gets passed into the node and is a property of the node; one of the upsides of this model is that different nodes can get different configs, if for some reason that makes sense. The downside is that there's no obvious place for an object like this to go looking for the config to take actions on. In theory, the node will get passed in to the object and stored, though. So, let's try it.
+	@property
+	def terminal(self):
+		if self.node.options and self.node.options.permissive:
+			return False
+		else:
+			return True
+
+	def terminate(self, exception):
+		print("")
+		print("")
+		print("Anaphora encountered an error which prevented a test from executing.")
+		print("")
+		traceback.print_exception(*exception)
+		print("")
+		sys.exit("terminating")
+
+#base exception types, not thrown
+class AnaphoraException(Exception):pass
+class TestRunException(AnaphoraException):
+	template = "{severity} in {loc} of {node}:"
+	def __init__(self, node):
+		super().__init__(self.template.format(severity=self.severity,
+			loc=self.loc, node=node))
+		self.node = node
+
+	def format_exception(self):
+		"""
+		Return a string containing a specially-formatted exception.
+
+		The _special_ part is just to remove anaphora's code from the traces.
+		"""
+		cause = self.__cause__
+		while cause.__cause__:
+			cause = cause.__cause__
+		#We can start on line 1 if it's a body test, or line 3 otherwise
+		stackfrom = 1 if isinstance(self, TestError) else 3
+
+		#a brief description of the error
+		err = traceback.format_exception_only(self.__class__, self)
+
+		#the error stack, from which we only want line 0, and 3+
+		stack = traceback.format_exception(cause.__class__, cause, cause.__traceback__)
+		return err + [stack[0]]+stack[stackfrom:]
+
+
+class HookError(TestRunException, Critical):pass
+
+#thrown exceptions
+class TestFailure(TestRunException, Benign):
+	severity = "Assertion failed"
+	loc = "test body"
+
+class BeforeHookError(HookError):
+	loc = "before hook"
+class AfterHookError(HookError):
+	loc = "after hook"
+class TestError(TestRunException, Critical):
+	loc = "test body"
+
+class SkipNode(TestRunException, Benign):
+	loc = "not sure this makes sense"
+
+class OurDb(sqlite3.Connection):
+	def __init__(self, *args, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.execute("PRAGMA foreign_keys=ON;")
+		self.execute("""CREATE TABLE nouns(
+				id INTEGER NOT NULL PRIMARY KEY,
+				name TEXT
+			);
+		""")
+		self.execute("""CREATE TABLE exceptions(
+				id INTEGER NOT NULL PRIMARY KEY,
+				e_class TEXT,
+				e_message TEXT,
+				e_traceback TEXT,
+				e_line INTEGER,
+				e_file TEXT,
+				node_id INTEGER REFERENCES nodes(id),
+				ignore INTEGER
+			);
+		""")
+
+	#TODO: build some smart methods on the exceptions for handling most of this; these concepts have now been partially rehashed in three places now
+	def add_exception(self, node, exception):
+		try:
+			cause = exception[1].__cause__
+			#We can start on line 1 if it's a body test, or line 3 otherwise
+
+			stackfrom = 1 if isinstance(exception[1], TestFailure) else 3
+			#a brief description of the error
+			err = traceback.format_exception_only(exception[0], exception[1])
+
+			#the error stack, from which we only want line 0, and 3+
+			stack = traceback.format_exception(cause.__class__, cause, cause.__traceback__)
+			tb = cause.__traceback__
+
+			while tb:
+				blame = tb
+				tb = tb.tb_next
+			#TODO: error file is showing up as bdd.py when it shouldn't; have to rejigger
+			self.execute("INSERT INTO exceptions (e_class, e_message, e_traceback, e_line, e_file, node_id, ignore) VALUES (?, ?, ?, ?, ?, ?, ?);", (exception[0].__name__, str(exception[1]), "\n".join(err + [stack[0]]+stack[stackfrom:]), blame.tb_lineno, blame.tb_frame.f_code.co_filename, node.id, node.ignored))
+		except:
+			info = sys.exc_info()
+			traceback.print_exception(info[0], info[1], info[2])
+
+	def setup_stat_table(self, stats):
+		#the comma in here is wrong if there are no tracked stats; either we need default tracking or that needs to be magicked
+		#nodes table
+		self.execute("""CREATE TABLE IF NOT EXISTS nodes(
+				id INTEGER NOT NULL PRIMARY KEY,
+				description TEXT,
+				parent_id INTEGER REFERENCES nodes(id),
+				noun_id INTEGER REFERENCES nouns(id),
+				{}
+			);
+		""".format(", ".join([stat.create_sql for stat in stats])))
+		#aggregate table (mostly for joining on); this index is only valid for the child-most objects; it probably needs to be added to the existing aggregate!
+		#I think that caveat (it's only valid for the child-most objects!) is my problem
+		#either I have to make it valid, or I need more logic elsewhere to catch this
+		#so when the stats update, child_blah is always == ag_blah where parent.id == this.id, which means either pulling a real rabbit out of the hat in that context, or figuring out SQL to make sure the view table is fucking correct? But the view can't really be. The point is just that
+		self.execute("""CREATE VIEW IF NOT EXISTS aggregate
+				AS SELECT parent_id,
+				{}
+				FROM nodes
+				GROUP BY parent_id;
+		""".format(", ".join([stat.sum_sql for stat in stats])))
+
+	def track_stats(self, stats):
+		self.tracked_stats = stats
+		self.setup_stat_table(stats)
+		# not 100% sure we'll use this yet, but this means we use a single database file for test runs over time.
+		# if they indicate they're saving this database when we're done, we'll create a metadata table for them containing information about the conditions under which the test was run and key specific test runs against it (versus a more naive version where we just save timestamped database files for each run)
+		# self.execute(create meta)
+		...
+
+	def clean_up(self, node):
+		for stat in self.tracked_stats:
+			stat.clean_up(node)
+
+	def clear_stats(self):
+		self.tracked_stats = None
+		Stat.rapture() #dispose of statobs #TODO all sorts of entanglement to deal w/ here
+
+	def add_node(self, node):
+		#print(node.description)
+		cur = None
+		try:
+			cur = self.execute("INSERT INTO nodes (description, parent_id, noun_id) VALUES (?, ?, ?);", (node.description, node.parent.id if node.parent else None, node.__class__.id))
+			return cur.lastrowid
+		except Exception as e:
+			print("sql error in add_node: %s" % e)
+			#print(e.args)
+
+	def update_node(self, node):
+		#if this is going to include sums, we need to either create an initial schema capable of holding them, or we need to make a separate table that we join at query
+		self.execute("WITH ag AS (SELECT * FROM aggregate WHERE parent_id={nodeid}) UPDATE nodes SET {query} WHERE nodes.id={nodeid};".format(query=", ".join((stat.update_sql for stat in self.tracked_stats)), nodeid=node.id), [stat.compute(node) for stat in self.tracked_stats]) #use parameters here, or compute ourselves a bit tediously?
+
+	def add_noun(self, noun):
+		#print(noun.__name__)
+		cur = self.execute("INSERT INTO nouns (name) VALUES (?);", (noun.__name__,))
+		return cur.lastrowid
+
+	#TODO: rm print when I don't need debugz
+	def execute(self, *args, **kwargs):
+		# print(args)
+		# print(kwargs)
+		return super().execute(*args, **kwargs)
+
+class QueryAPI(OurDb):
+	"""
+	All queries return either an instance of sqlite.Row, or an iterator (sqlite.Cursor) which will return some number of these. You probably want to consume these one at a time by iterating on the cursor, but you may call `.fetchall()` or use `list` on the cursor to create a list of Row objects. On a row object, columns can be accessed either by list index (row[1]), or by column-name key (row["id"]). I recommend the latter. You can use dict(Row) for introspection purposes, but it's an unnecessary step for normal use.
+
+	For queries which return nodes, the :id:, :depth:, :parent_id: and :noun_id: keys will always be present. Other included stats will depend on what stats the reporter's tracked_stats() function expressed interest in tracking. See documentation of Anaphora.Reporter class for how to declare interest.
+
+	You are of course free to compose your own queries; this was one of the reasons for choosing an sql backend.
+	"""
+	#let's re-cycle common query parts
+	query_templates = {
+		"tree": """
+			WITH RECURSIVE tree(id, depth) AS (
+				SELECT id,
+					   0 AS depth
+				FROM nodes
+				WHERE id={}
+				UNION ALL
+				SELECT child.id,
+					   parent.depth + 1
+				FROM nodes AS child
+				JOIN tree AS parent ON child.parent_id=parent.id
+				ORDER BY depth DESC, id ASC
+			)
+			{}
+		"""
+	}
+	#calculate the sql behind major queries and keep it here
+	#both so we aren't calculating on call, and so other functions can use
+	#the sql without forcing a call.
+	#ideally also need some modular notions like, "with exceptions" and possibly "with noun" that can just be tacked onto the right queries.
+	queries = {
+		"tree": query_templates["tree"].format(1, """
+			SELECT tree.depth, nodes.*, nouns.name, exceptions.e_class, exceptions.e_message, exceptions.e_traceback, exceptions.e_line, exceptions.e_file
+			FROM tree
+			JOIN nodes ON tree.id=nodes.id
+			JOIN nouns ON nodes.noun_id=nouns.id
+			LEFT OUTER JOIN exceptions ON exceptions.node_id=nodes.id
+			"""),
+		"node_tree": query_templates["tree"].format("?", """
+			SELECT tree.depth, nodes.*
+			FROM tree
+			JOIN nodes ON tree.id=nodes.id
+			"""),
+		"depths": query_templates["tree"].format(1, """
+			SELECT DISTINCT depth, count(depth) as count
+			FROM tree
+			GROUP BY depth
+			"""),
+		"depth": query_templates["tree"].format(1, """
+			SELECT DISTINCT depth, count(depth) as count
+			FROM tree
+			WHERE depth=?
+			GROUP BY depth
+			"""),
+		"node_depths": query_templates["tree"].format("?", """
+			SELECT DISTINCT depth, count(depth) as count
+			FROM tree
+			GROUP BY depth
+			"""),
+		"node_depth": query_templates["tree"].format("?", """
+			SELECT DISTINCT depth, count(depth) as count
+			FROM tree
+			WHERE depth=?
+			GROUP BY depth
+			""")
+	}
+
+	#what do we still lack for traditional node-oriented queries?
+	#aggregating pass/fail counts for a depth, or for node descendants, etc. query explicit v. implicit failures.
+
+	def tree(self, node_id=None):
+		"""
+		Return iterator over nodes with depth information.
+
+		Selects entire tree by default, or nodes below :node_id: otherwise.
+
+		Each row will have a "depth" key which indicates its level in the tree structure.
+		"""
+		return self.execute(self.queries["node_tree"], (node_id,)) if node_id else self.execute(self.queries["tree"])
+
+	def nodes(self):
+		"""
+		Return iterator over nodes for entire run without depth information.
+		"""
+		return self.execute("SELECT * FROM nodes ORDER BY id ASC;")
+
+	def node(self, node_id):
+		"""
+		Return node indicated by :node_id:.
+		"""
+		return self.execute("SELECT * FROM nodes WHERE id=?;", (node_id,)).fetchone()
+
+	def depths(self, node_id=None):
+		"""
+		Return iterator over each distinct depth and the number of nodes at that depth.
+		"""
+		return self.execute(self.queries["node_depths"], (node_id,)) if node_id else self.execute(self.queries["depths"])
+
+	def depth(self, node_id=None, depth=0):
+		"""
+		Return the number of nodes that were found at a given :depth:.
+		"""
+		return self.execute(self.queries["node_depth"], (node_id, depth)).fetchone() if node_id else self.execute(self.queries["depth"], (depth,)).fetchone()
+
+	#what kind of noun related stats might we want? a list of nouns, a list of nouns and the number of times they're used. a list of all nodes using a noun. A depth-list of each node using a noun and all of its descendants. A fail/succeed count for one or all nouns. A fail/succeed count for the trees below a noun.
+
+	def nouns(self):
+		return
+
+	def noun(self, noun=None):
+		return
+
+	#ditto per exceptions
+	def counted_exceptions(self):
+		return self.execute("SELECT * FROM exceptions WHERE ignore != 1;")
+
+	def ignored_exceptions(self):
+		return self.execute("SELECT * FROM exceptions WHERE ignore == 1;")
+
+	def exceptions(self):
+		return self.execute("SELECT * FROM exceptions;")
+
+
+# Adapted from code by Oren Tirosh, MIT license per http://code.activestate.com/recipes/578231-probably-the-fastest-memoization-decorator-in-the-/
+class CacheDict(dict):
+	"""
+	Memoize calls to a closure provided on init which accepts a single argument.
+	"""
+	def __init__(self, func):
+		self.func = func
+		super().__init__()
+
+	def __missing__(self, key):
+		ret = self[key] = self.func(key)
+		return ret
+
+
+class Stat(object):
+	"""
+	Represents a statistic which anaphora can track for each node.
+
+	Here's a simple declaration for one of Anaphora's internal stats:
+		Stat(lambda _: _.runtime["setup"]).called("setup").type("numeric")
+
+	The Stat constructor's lone argument should be a closure which accepts a single argument. It will be called with the node object the stat is being computed for. Our convention is to name this argument _ for brevity and visual distinction. The stat object also expects to be given a string name via the `called` method and have a `type` declared. Valid types are in VALID_TYPES ({valid_types}), and the default is {column_type}.
+
+	Core statistics are a little boring by themselves; the power and usefulness of the stat declaration system comes from composite statistics. Let's look at a pair:
+
+		Stat(lambda _: _.stat("before") + _.stat("after")).called("hooks").type("numeric")
+		Stat(lambda _: _.stat("hooks") + _.stat("setup") + _.stat("during") + _.stat("teardown")).called("runtime").type("numeric")
+
+	The first statistic here, called _hooks_, is the sum of the core statistics tracked for time spent running the before and after hooks. You can see here that the node object has a convenience method, `stat`, which accepts the string name of a declared statistic and either computes the value and caches it, or pulls it directly from the cche.
+
+	If you look carefully at the second statistic, called `runtime`, you'll notice that it's composed from the composite statistic `hooks`, and the core statistics `setup`, `during`, and `teardown`. Together, these are the full run time for a node. If the `hooks` value has already been calculated from the core `after` and `before` hook stats, it will just be pulled from the cache instead of being re-computed.
+
+	The stats system will decompose every composite statistic as far as necessary to resolve it into a real value, caching each step along the way. While this isn't a huge deal for relatively simple stats, it can save a lot of time when it comes to tracking many composite sums, and computing many differences, percentages, percentage differences, etc. As such, it's usually best to compose each statistic from the smallest number of other statistics.
+
+	It's also worth noting that only statistics in the tuple returned by a reporters `tracked_stats` method will be added to the database. You can take advantage of the caching to create untracked intermediary statistical units that are only used to compose other advanced units.
+	"""
+	VALID_TYPES = ("INTEGER", "NUMERIC", "REAL")
+	column_type = VALID_TYPES[1]
+	__doc__ = __doc__.format(valid_types=", ".join(map(str.lower, VALID_TYPES)), column_type=column_type.lower())
+	PROPERLY_INITIALIZED = 2
+	all_stats_go_to_heaven = {} #class global
+	# using "format" style for consistency/clarity, but will actually
+	# use .replace on these. This isn't a mistake; format just requires
+	# more work to use without all kwargs present.
+	how_to_create_me = "{name} {type} DEFAULT 0, child_{name} {type} DEFAULT 0"
+	#ideally this would just be child_{name}=ag.{name} but sqlite doesn't seem to support this syntax. Possible TODO if there's an sqlite language update in future versions.
+	how_to_update_me = "{name}=?, child_{name}=(SELECT ag_{name} FROM ag)"
+	#TODO: after initial release. there's a loophole here where there's one type of stat I want to aggregate without including the current level, and a different kind of stat I want to aggregate WITH the current level. The heuristic is when the outer level INCLUDES the inner level, we ONLY want to aggregate the inner-level parts. When the outer level NEVER includes the inner level, we want both. Applied, though, setup/before/after/teardown want both; during only wants the lower-levels. How can I differentiate? Is it possible for the stat to specify? These will likely be default/permadefs, so it's OK to use API features more complex than users are expected to deal with.
+	aggregator = "all"
+	how_to_aggregate = {"all": "total(child_{name})+total({name}) as ag_{name}", "children":"(CASE WHEN sum(child_{name}) IS NULL THEN total({name}) ELSE total(child_{name}) END) as ag_{name}"}
+
+	@property
+	def how_to_aggregate_me(self):
+	    return self.how_to_aggregate[self.aggregator]
+
+	    #I think: aggregate all when the definition of a unit means they exclude each other
+	def aggregate_all(self):
+		self.aggregator = "all"
+		return self
+
+		#I think: aggregate_children when the definition means they include each other
+		#i.e. my during time includes my child's during time, but it also includes a bunch of junk, the sum of my "during" time is the time spent in my children
+	def aggregate_children(self):
+		self.aggregator = "children"
+		return self
+
+	@property
+	def initialized(self):
+		return len(self.__initialized) == self.PROPERLY_INITIALIZED
+
+	def __init__(self, closure):
+		self.__initialized = set()
+		self.__cache = CacheDict(closure) #node:value
+
+	@classmethod
+	def stat(cls, name):
+		return cls.all_stats_go_to_heaven[name]
+
+	@classmethod
+	def rapture(cls):
+		cls.all_stats_go_to_heaven = {}
+
+	def called(self, name):
+		self.name = name
+		self.all_stats_go_to_heaven[name] = self
+		# see defs in class head for note on .replace
+		self.how_to_create_me = self.how_to_create_me.replace('{name}', name)
+		self.how_to_update_me = self.how_to_update_me.replace('{name}', name)
+		self.how_to_aggregate = {k:v.replace('{name}', name) for k,v in self.how_to_aggregate.items()}
+		self.__initialized.add("called")
+		return self
+
+	def type(self, column_type):
+		column_type = column_type.upper()
+		if column_type in self.VALID_TYPES:
+			self.column_type = column_type
+			self.how_to_create_me = self.how_to_create_me.replace('{type}', column_type)
+			self.how_to_aggregate = {k:v.replace('{type}', column_type) for k,v in self.how_to_aggregate.items()}
+			self.__initialized.add("type")
+		return self
+
+	def compute(self, node):
+		return self.__cache[node]
+
+	@property
+	def create_sql(self):
+		if self.initialized:
+			return self.how_to_create_me
+		else:
+			raise Exception("Attempting to create columns for a stat that wasn't properly initialized.")
+
+	@property
+	def update_sql(self):
+		if self.initialized:
+			return self.how_to_update_me
+		else:
+			# you'd have to be doing something willfully odd to get here; cut?
+			raise Exception("Attempting to update columns for a stat that wasn't properly initialized.")
+
+	@property
+	def sum_sql(self):
+		if self.initialized:
+			return self.how_to_aggregate_me
+		else:
+			# you'd have to be doing something willfully odd to get here; cut?
+			raise Exception("Attempting to create aggregate columns for a stat that wasn't properly initialized.")
+
+	def clean_up(self, node):
+		del self.__cache[node]
+
+
+class RunnerMixin(object):
+	"""
+	Support functions for TestRunners.
+
+	See the TestRunner class for details.
+	"""
+	def load(self, module_strs):
+		self._modules = module_strs
+		self.les_iterables = map(lambda x: Module(x), module_strs)
+		#self.auto_import = map(lambda x: x.load(), self.delay_import)
+		return self
+
+	#return a Module object, but don't load it yet. What if they expect it to work that way?
+	#for module in modules(): [unloaded_module1, unloaded_module2]
+	#	for class in module.classes() unloaded_module1.classes()
+	#	for class in module.load().classes()
+	def __iter__(self):
+		print("__iter__ in %s" % self)
+		self.before_iter()
+		return self
+
+	#import needs to only be run explicitly, AND iter needs to return Module objects?
+	def __next__(self):
+		print(self.les_iterables)
+		try:
+			return next(self.les_iterables)
+		except StopIteration:
+			self.after_iter()
+			raise
+
+	def before_run(self):
+		#TODO: may be wrong/unnecessary
+		if not self.id:
+			self.__class__.id = self.db.add_noun(self.__class__)
+		self.id = self.db.add_node(self)
+		self.add()
+
+		self.start_coverage()
+		self.checkpoint(self.SETUP)
+		self.run_hooks(self.BEFORE)
+
+	def after_run(self):
+		self.checkpoint(self.DURING)
+		self.run_hooks(self.AFTER)
+		self.end_coverage()
+		#fail if all children failed?
+		if self.succeeded == None:
+			self.succeed()
+		self.db.update_node(self)
+		self.clean_up()
+
+	def before_iter(self):
+		print("also-ran in %s" % self)
+		self.before_run()
+
+	def after_iter(self):
+		print("after-ran in %s" % self)
+		self.after_run()
+
+	#import will run implicitly when .classes/functions/modules is called
+	def classes(self, predicate=None):
+		return itertools.chain(*[x.classes(predicate) for x in self])
+
+	def functions(self, predicate=None):
+		return itertools.chain(*[x.functions(predicate) for x in self])
+
+	def modules(self, predicate=None):
+		return itertools.chain(*[x.modules(predicate) for x in self])
+
+	def methods(self, predicate=None):
+		return itertools.chain(*[x.methods(predicate) for x in self])
+
+
+class Noun(CONSTANTS, RunnerMixin):
 	description = None
 	environment_vars = None
 	environment_var_keys = None
@@ -111,29 +537,41 @@ class Noun(CONSTANTS):
 	children = None
 	nouns = None
 	coverage = None
-	done = False
 	hook_error = None
 	hook_error_type = None
+	options = meta.config
+	skip_me = False
+	succeeded = None
+	ignored = None
+	#TODO: after initial. some method to specify file in case user wants to keep db
+	#db = QueryAPI(':memory:', detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
+	db = QueryAPI('temp.db', detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
+	db.row_factory = sqlite3.Row
+	id = None # this gets assigned after we're inserted in the db.
 	_current = [] #intentionally shared for class instances.
 
 	def __init__(self, desc, *args, **kwargs):
+		self._checkpoint = datetime.datetime.utcnow()
 		self.parent = self.current
 		self.description = desc
 		self.exceptions = []
 		self.children = []
 		self.nouns = []
+		#will be interesting to figure out how to db this, perhaps it can wait
 		self.coverage = {}
-		self.stats = RuntimeStats()
+		self.reset_runtime()
 
 		self.hooks = {self.BEFORE:[], self.AFTER:[]}
 		if 'before' in kwargs:
 			self.hooks[self.BEFORE].append(kwargs['before'])
 		if 'after' in kwargs:
 			self.hooks[self.AFTER].append(kwargs['after'])
-		if 'options' in kwargs:
-			self.options = kwargs['options']
-		if 'config' in kwargs:
-			self.config = kwargs['config']
+		#TODO: this may be crazy. Basically the default is for options to go on the class, and if the class already has options to assume you meant to stick them on the node. This seems fragile. Probably needs better thinks.
+		#Yes, this doesn't even work. We need to support a few models:
+		#1. All nodes get their settings from the primary config object, of which a single copy exists. node.config = conf
+		#2. By default, all nodes get their settings from the primary config object, but one class of nodes might get its config from some other shared location, node_class.config = conf
+		#3. By default, all nodes get their settings from the primary config, but one class of nodes gets its config from a second shared location, and one specific node of this type has an explicitly-set config which differs from all of the above and is local to that instance. node_instance.config = conf
+		#I can achieve 1 through the class variable declaration, but the dynamic grammar generation makes the second model to swing without having something explicit in the init routine or on the object for setting the config on the class or the instance.
 
 	@property
 	def current(self):
@@ -143,177 +581,360 @@ class Noun(CONSTANTS):
 			return None
 
 	def add(self):
-		if self.parent:
-			self.parent.children.append(self)
-
+		print("adding %s which has parent: %s" % (self, self.parent))
 		self._current.append(self)
 
 	def remove(self):
-		self.done = True
 		self._current.pop()
 
 	def grammar(self, names):
 		for name in names:
 			if isinstance(name, str):
 				new_class = type(name, (Noun,), {})
-				inspect.currentframe().f_back.f_locals[name] = new_class #TODO: should this be f_locals or f_globals?
+				#TODO: should this be f_locals or f_globals?
+				inspect.currentframe().f_back.f_locals[name] = new_class
 				self.nouns.append(new_class)
 			elif isinstance(name, Noun):
 				self.nouns.append(name)
 
 		return self
-		#noun
 
-
-	def config(self, config, options):
-		self.config = config
+	def config(self, options):
 		self.options = options
 
 	def __enter__(self):
+		print("entering: %s" % self.description)
+		if not self.id:
+			self.__class__.id = self.db.add_noun(self.__class__)
+
+		self.id = self.db.add_node(self)
 		self.environment_vars = inspect.currentframe().f_back.f_locals
-		# this needs to get moved off into a branch in case we need it
-		# self.environment_vars['this'] = self
+
+		#a "magic" var tentatively named _ is available with some special methods for controlling test in ways we can't otherwise.
+		self.environment_vars['_'] = self
 		self.environment_var_keys = set(self.environment_vars.keys())
 		self.add()
+
+		#TODO: turn coverage back on.
 		#self.cov = coverage.coverage(branch=True, omit="*anaphora/__init__.py")#, , omit=["test.py", "*colorama*"]plugins=["plugin"]
 		# in the cli model this is parsed out of the command options...
 		# print(__file__)
-		self.cov = coverage.coverage(branch=True)
+		self.start_coverage()
+		#self.cov = coverage.coverage(branch=True)
 		#self.cov = coverage.coverage(branch=True, omit=[__file__, "*anaphora/__init__.py"])
 		#self.cov = coverage.coverage(branch=True, omit=["*%s.py" % self.options.file, "*anaphora/__init__.py"])
-		self.cov.start()
+		#self.cov.start()
+		self.checkpoint(self.SETUP)
 
-		self.stats.checkpoint(self.SETUP)
 		# we are now on the *user's* time, be fleet of foot
-
-		try:
-			self.run_hooks(self.BEFORE)
-		except Exception as e:
-			# we can't raise an error here or it'll terminate our with statement and send
-			# the error up to our parent's __exit__ func; but we still need the error, so
-			# we'll save it and use it in our own exit func later.
-			self.hook_error_type = self.BEFORE
-			self.hook_error = e
-
-		self.stats.checkpoint(self.BEFORE)
+		self.run_hooks(self.BEFORE)
+		print("about to run: %s" % self.description)
+		self.entered = True
 		return self
 
-	"""
-	What is the desired hook failure mode? it seems like our goals should be:
-	1.) that test doesn't execute (this actually isn't practical unless we actually raise an error, yeah?)
-	2.) the outer test either continues, or halts; ideally anything that doesn't DEPEND on the failing test can go ahead and anything that does shouldn't run. But we don't have any real clear way of specifying when something does/n't depend. It makes little sense to test a feature that relies on another feature test that has already failed.
-
-	python's unittest module handles this concept in the setup/teardown funcs; principle of least-surprise may dictate I take a similar tack:
-	setUp()¶
-		Method called to prepare the test fixture. This is called immediately before calling the test method; other than AssertionError or SkipTest, any exception raised by this method will be considered an error rather than a test failure. The default implementation does nothing.
-
-	tearDown()
-		Method called immediately after the test method has been called and the result recorded. This is called even if the test method raised an exception, so the implementation in subclasses may need to be particularly careful about checking internal state. Any exception, other than AssertionError or SkipTest, raised by this method will be considered an error rather than a test failure. This method will only be called if the setUp() succeeds, regardless of the outcome of the test method. The default implementation does nothing.
-	"""
 	#TODO has this partial rewrite introduced problems in where checkpoints are located?
 	def __exit__(self, exception_type, exception_value, tb):
-		self.stats.checkpoint(self.DURING)
+		skip = False
+		print("exiting: %s" % self.description)
+		self.checkpoint(self.DURING)
 
 		if exception_type is not None:
-			if exception_type == SystemExit:
+			print("exception_type: %s" % exception_type)
+			if isinstance(exception_value, SkipNode):
+				print("caught skip for: %s" % self.description)
+				exception_type, exception_value, tb = (None,None,None)
+				skip = True
+			elif exception_type == SystemExit:
 				sys.exit(exception_value)
+			elif isinstance(exception_value, TestError):
+				if exception_value.terminal:
+					return False
+
 			elif exception_type != AssertionError:
-				print(exception_type, exception_value, tb)
-				sys.exit("Uncaught, unexpected exception during test run, somehow...")
+				try:
+					raise TestError(self) from exception_value
+				except TestError as e:
+					self.exception(sys.exc_info())
+					if e.terminal:
+						raise
 
 		# there was an error in a before hook, so we'll create a hook error based on it
 		# and add it to the list of exceptions for this node
 		if self.hook_error_type == self.BEFORE:
 			try:
-				raise BeforeHookError("Error in before hook of %s:", self) from self.hook_error
-			except BeforeHookError:
+				raise BeforeHookError(self) from self.hook_error
+			except BeforeHookError as e:
 				self.exception(sys.exc_info())
+				if e.terminal:
+					raise
 
-		try:
-			self.run_hooks(self.AFTER)
-		except Exception as e:
-			self.hook_error_type = self.AFTER
-			# there was an error in an after hook, so we'll create a hook error based on it
-			# and add it to the list of exceptions for this node
+		self.run_hooks(self.AFTER)
+
+		if self.hook_error_type == self.AFTER:
 			try:
-				raise AfterHookError("Error in after hook of %s:", self) from e
-			except AfterHookError:
+				raise AfterHookError(self) from self.hook_error
+			except AfterHookError as e:
 				self.exception(sys.exc_info())
+				if e.terminal:
+					raise
 
-		self.stats.checkpoint(self.AFTER)
-		if self.hook_error_type != None:
-			self.cov.stop()
-			self.cov.save()
-			reporter = cover.Dict(self.cov, self.cov.config)
-			self.coverage = reporter.statistics(None)
+		if self.hook_error_type != None: #TODO: why the fuck does this break w/o this check?
+			self.end_coverage()
 
-		self.remove()
+		if exception_type is not None:
+			self.fail()
 
-		#TODO: only nodes with no children actually "succeed" or "fail"? (they get double-counted otherwise and totals become useless, but this isn't strictly true since an encompassing block can certainly have test conditions of its own...)
-		if not len(self.children):
-			if exception_type is not None:
-				self.fail()
+			#chain an error off the actual exception to add value
+			try:
+				raise TestFailure(self) from exception_value
+			except TestFailure:
+				self.exception(sys.exc_info())
+		elif self.hook_error:
+			self.fail()
+		elif skip:
+			pass
+		else:
+			self.succeed()
 
-				#chain an error off the actual exception to add value
-				try:
-					raise TestError("Error in body of %s:", self) from exception_value
-				except TestError:
-					self.exception(sys.exc_info())
-			elif self.hook_error:
-				self.fail()
-			else:
-				self.succeed()
-
-		#clean up anything we've added to the namespace
+		#clean up the namespace
 		for x in (self.environment_vars.keys() - self.environment_var_keys):
 			del self.environment_vars[x]
 
-		self.stats.checkpoint(self.TEARDOWN)
+		self.db.update_node(self)
+		self.clean_up()
 		return True
 
-	def bubble(self, what):
-		"""
-		Return True if a reporter along the chain wants us to bubble <what>.
+	def start_coverage(self):
+		return
+		self.cov = coverage.coverage(branch=True)
+		self.cov.start()
 
-		If no one says a word, our default is to bubble.
-		"""
-		each = self
-		while each.parent:
-			each = each.parent
-			if hasattr(each, 'reporter'):
-				reporter_cares, reporter_wants = each.reporter.bubble(what)
-				if reporter_cares:
-					return reporter_wants
+	def end_coverage(self):
+		return
+		self.cov.stop()
+		self.cov.save()
+		reporter = cover.Dict(self.cov, self.cov.config)
+		self.coverage = reporter.statistics(None)
 
-		return True
+	def stat(self, name):
+		return Stat.stat(name).compute(self)
 
-	def cascade(f):
-		def uphill(self, *args, **kwargs):
-			if self.parent:
-				if self.bubble(f.__name__):
-					getattr(self.parent, f.__name__)(*args, **kwargs)
-			f(self, *args, **kwargs)
-		return uphill
+	def reset_runtime(self):
+		self.runtime = [datetime.timedelta() for x in range(5)]
 
-	#noun
-	@cascade
+	def clean_up(self):
+		#knowledge-sink for tasks we have to perform to remove references to this node. Ideally we'll do this through putting a function on all of the objects that need to forget us which accepts a node object and scrubs references to it.
+		#likely suspects: OurDb
+		#individual stat caches
+		self.db.clean_up(self)
+		self.remove()
+
+	@classmethod
+	def turn_out_the_lights(cls):
+		cls.db.clear_stats()
+		cls.db = None
+
+	def checkpoint(self, name):
+		temp = self.runtime[name] = datetime.datetime.utcnow() - self._checkpoint
+		self._checkpoint = datetime.datetime.utcnow()
+		return temp
+
+	# the db will convert True/False and return 1/0 on query
+	# so we're just going to stick to what the db wants instead of forcing a
+	# conversion going in and another coming out
+	# a skipped node will have a value of None, which the db api will preserve
 	def succeed(self):
-		self.stats.succeed(self.__class__.__name__)
-	#noun
-	@cascade
-	def fail(self):
-		self.stats.fail(self.__class__.__name__)
+		self.succeeded = 1
 
-	#noun
-	@cascade
+	#stats
+	def fail(self):
+		self.succeeded = 0
+
 	def exception(self, exception):
-		self.stats.exceptions.append(exception)
+		self.exceptions.append(exception)
+		self.db.add_exception(self, exception)
 
 	def __str__(self):
 		return "%s: %s" % (self.__class__.__name__, self.description)
 
 	def run_hooks(self, kind):
-		for hook in self.hooks[kind]:
-			hook(self)
+		try:
+			for hook in self.hooks[kind]:
+				hook(self)
+		except Exception as e:
+			# can't raise here or it'll terminate with statement and send
+			# the error up to parent's __exit__; we still need the error, so
+			# save it and use it in our own exit func later.
+			self.hook_error_type = kind
+			self.hook_error = e
+		self.checkpoint(kind)
+
+	def report(self):
+		if self.reporter:
+			return self.reporter.report(self)
+		else:
+			return 'nein reportage'
+
+	## "special" functions for controlling some specific tests
+
+	def ignore(self):
+		self.ignored = True
+
+	def skip(self):
+		"""Skip execution of a test node."""
+		self.reset_runtime()
+		# TODO: Are there any other clean-up tasks we need?
+		# self.db.update_node(self)
+		# self.clean_up()
+		raise SkipNode(self)
+
+
+#jesus christ document this please
+#note that files provides all the hooks we'd want; before everything, after everything, before each import, after each import.
+import re, inspect
+def convert(converter):
+	def matching(f):
+		def match(self, predicate=None):
+			if predicate:
+				self.les_iterables = (converter(ob) for key, ob in f(self) if predicate(key))
+			else:
+				self.les_iterables = (converter(ob) for key, ob in f(self))
+			return self
+		return match
+	return matching
+
+#if this backs out into Noun itself, we can use our regular grammar and do things like:
+#for test in goal("parse xml").modules([strs]).classes(regex)
+##TODO: don't think I'm using this, but I can't tell if it's vestigial or incubating
+class Modules(Noun):
+	def __init__(self, desc, module_strs, *args, **kwargs):
+		super().__init__(desc, *args, **kwargs)
+
+class TestRunner(Noun):
+	"""
+	Scaffold for running other types of test within an Anaphora run.
+
+	Broadly, this enables a few uses of Anaphora:
+	1. Folding tests written before Anaphora was in use into Anaphora's structured approach.
+	2. Architecting an Anaphora run that spans many types of test.
+	"""
+	runnable = False
+	def __init__(self, ob, *args, **kwargs):
+		self.ob = ob
+		name = ""
+		if hasattr(ob, "__module__"):
+			name += ob.__module__ + "."
+		if hasattr(ob, "__self__"):
+			name += ob.__self__.__class__.__name__ + "."
+		name += ob.__name__
+		super().__init__(name, *args, **kwargs)
+
+	#TODO: there's probably a lot of refactor work to fit SQL and shit in here.
+	#TODO: Error handling may need twerk? dunno, it's so different structurally than the CM
+	#TODO: full review of the enter/exit and this run routine to see if there are good ways to refactor them both or if they just need to be very different.
+	def run(self, *args, **kwargs):
+		self.before_run()
+		ran = None
+
+		try:
+			ran = self.execute(*args, **kwargs)
+			self.succeed()
+		except Exception as e:
+			print("You actually expect me to clean up around here?") # TODO?
+			#record the exception,
+			#mark the failure,
+			#but then swallow the exception so's we can continue.
+			self.fail()
+
+		self.after_run()
+		return ran
+
+	def execute(self, *args, **kwargs):
+		raise NotImplementedError
+
+#there are two main cases for how modules need to work. x.modules().classes() needs the modules to go ahead and get imported so we can operate on class, but module in modules() would ideally delay this execution so we can do module.run() which itself handles the hooks. This is also important in the context of not having a bunch of erroneous timing data for modules().classes(). This is quite the conundrum, since both use cases make use of next(self.iter). I guess the only real option is to change .classes()/etc. as they're the only ones that can elect not to rely on next(self)
+#
+#I'm so far removed from this that I now have to talk myself back into understanding it. The basic problem is that we need a way to either import immediately, or import lazily, and part of the base reason for this is that in some case just importing a file is sufficient to run a test, while in other cases the tests have to be explicitly called.
+
+class Callable(TestRunner):
+	runnable = True
+	def execute(self, *args, **kwargs):
+		return self.ob(*args, **kwargs)
+
+class Function(Callable):
+	...
+
+class Method(Callable):
+	...
+
+#ostensibly I have to instantiate a class?
+class Class(TestRunner):
+	@property
+	def ob(self):
+		return self._ob
+	@ob.setter
+	def ob(self, value):
+		self._ob = value() #create an instance of the class? do we need to be able to call it? manually instantiate it ourselves? would that much control be overkill?
+
+	@convert(Method)
+	def methods(self):
+	#this is returning a list without triggering my iterators, "Module" below will also have this same problem. So basically we never "enter" cls because we never use cls.run() (this also brings up the sub-question of what exactly cls.run() would even do, and whether or not cls.run() should be the way we approach this?)
+	#this implies there's mode A where we can just exec a class
+	#and mode B where we get its methods and exec them one by one?
+	#I think a way to hedge against this is to go ahead and use the same chain structure for all of these? This didn't quite work, but it's on the right track.
+	#We need an iterator to dole out the objects this would return, and we need to "enter" when we start acting on the iterator, and we need to "exit" when it runs out of shit.
+	#This either means we need a special iterator class, or we need to be stuffing the things this iterator wants to return into our object somewhere and using our existing iterator functionality to dole them out.
+	#i.e. self.serve_these = inspect.getmembers(...)
+	#return self
+		return inspect.getmembers(self.ob, inspect.ismethod)
+
+
+#This is Python. Don't bend over backwards to let them work with files instead of modules. Require a list of module strings.
+# How do we support intuitive chaining like this?
+# for class in Modules("anaphora.tests").classes()
+# 	class.blah
+# this is kinda like [x.classes(regex) for x in Modules(...)]
+# the key is that .classes() returns an iterator that will run over module1.classes(), module2.classes(), etc.
+class Module(TestRunner):
+	runnable = True
+	def __init__(self, module_str, *args, **kwargs):
+		self.delay_init = module_str
+		print(module_str)
+		super(TestRunner, self).__init__("", *args, **kwargs)
+
+	#try to import us the first time self.ob gets accessed.
+	@property
+	def ob(self):
+		self.construct()
+		return self._ob
+	@ob.setter
+	def ob(self, value):
+		self._ob = value
+
+
+	def construct(self):
+		temp = __import__(self.delay_init, {}, None, [], 0)
+		self.ob = temp
+		self.description = temp.__name__
+		del self.delay_init
+
+	def execute(self, *args, **kwargs):
+		return self.construct()
+
+	@convert(lambda x: Module(x))
+	def modules(self):
+		#this needs to be an object for sure by now
+		return inspect.getmembers(self.ob, inspect.ismodule)
+
+	@convert(Class)
+	def classes(self):
+		return inspect.getmembers(self.ob, inspect.isclass)
+
+	@convert(Function)
+	def functions(self):
+		return inspect.getmembers(self.ob, inspect.isfunction)
 
 Anaphora = Noun("AnaphoraSingleton")
+
+def clean_up():
+	Noun.turn_out_the_lights()

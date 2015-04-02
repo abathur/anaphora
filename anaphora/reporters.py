@@ -1,6 +1,7 @@
 import colorama, traceback
 from .bdd import TestError
 from types import MethodType
+from .bdd import Stat
 
 colorama.init(autoreset=True)
 def noneprint(arg):
@@ -24,7 +25,6 @@ class ColorLlama(NoOp):
 
 class Reporter(object):
 	viz = ""
-	bubbles = {}
 	"""
 	Base reporter class. The only strict requirements for subclasses is that they
 	must:
@@ -58,6 +58,10 @@ class Reporter(object):
 		self.register_format_strings(ColorLlama)
 
 	def report(self, testrun):
+		raise NotImplementedError
+
+	def tracked_stats(self):
+		"""Must return a tuple of stats this reporter wants tracked."""
 		raise NotImplementedError
 
 	def register_format_strings(self, fmt): #self, fmt
@@ -118,7 +122,13 @@ class Reporter(object):
 		"""
 		I run into a problem here with reporting useful statistics to the user because of how these things get counted. The current counting method is to only count failures and successes for items without children. So if you aren't hyper regular with the structure of your test blocks, it's possible for several different block elements to get counted.
 		The other way to probably do this is to count totals and also to aggregate per block type, so we know that 4 features, 3 needs 8 goals and 21 requirements failed. I could probably achieve both of these by updating the fail/succeed functions to use a dict?
+		The consternation over what to count implies we should just let the user define what gets counted (or, more likely, what we bother reporting).
+		Maybe a really advanced use case I'd like to eventually support can help guide me. Let's say I chunk tests under 6 features (ABCDEF) and I want to see my tests broken out by feature. But my tests aren't strictly structured by feature, they're structured by user role. So in a few cases where roles have different uses for a feature, the feature gets repeated in more than one role. What supports a run like that? At this point we're talking about some sort of query language, because we can't aggregate. An SQLITE :memory: db would be one approach.
+		Another might be providing a reporting api that performs these queries over the objects (or, of course, still using sqlite + these queries.)
+		What would database structure look like? Or is this a graph database?
+		It seems like maybe I can use the class to track instances and query this way, as long as we don't start needing very fancy things. And this is where the sqlite version starts looking attractive.
 		"""
+		return "test statz"
 		stats = node.stats.stats()
 		out = ["Test results:"]
 
@@ -133,16 +143,46 @@ class Reporter(object):
 		#return "{stats[1]:d} {stats[2]:d}".format(stats=node.stats.stats())
 
 	def runtime_summary(self, node):
-		cumulative = self.cumulative_times(node)
-		runtime = cumulative["total"]
-		return "derpiary"
-		#return "Run time: {:,.4f}ms or {:,.4f}ms/test; Time alottment (tests: {:.2%}, hooks: {:.2%}, anaphora:{:.2%})".format(runtime, runtime/(node.stats.failures+node.stats.successes), (runtime - cumulative["anaphora"] - cumulative["hook"])/runtime, cumulative["hook"]/runtime, cumulative["anaphora"]/runtime)
+		print(dict(node))
+		#a lot of these stats can be though of loosely as lies when looked at per node. For example, the "hooks" time of the top node only reflects time spent parsing *its* hooks, and not time spent processing hooks on any sub node. This isn't _wrong_ as much as it is prone to being unintuitive. Likewise, it's "during" time is a bit of a lie; it's claiming a "during" time for alllll of the sub nodes, including all of the overhead time spent parsing them. Again, this isn't entirely "wrong"; there's a case for it to be intuitive for the "during" segment to hold all sub-nodes.
+		#It's possible that the problem is just poor terminology. There may be a terminology that makes it clear--in one case we're counting everything that happens in the whole program while this node is running, while in another we're just presenting cumulative execution time of terminal nodes.
+		#There's a bigger question here of whether it's even possible to let users easily declare something like this latter cumulative type, or if we just have to write them in sql. In sql it seems quite doable. If we're aware they need some cumulative tracking it's also trivial to make them aggregate on their parent. It might also be the case that it makes no sense to try to track a stat like "tests" or even "succeeded" or "failed" in the aggregate because of the semantic issues they pose in our context. it might be best to just do retroactive per-noun stats. It's much more plausible to say that two apps passed at an average time of 150ms/app, or that 27 features passed at an average of 40ms/feature.
+		#It may be worth noting that by the time a node ends, all of its children will have terminated (and their nodes cleaned up...), so any cumulative tracking would have to be passed up to the parent at cleanup time.
+		#time_actually_spent_in_me
+		#sum_of_all_sub_node_durations (i.e., excluding all setup time.)
+		#time_actually_spent_in_my_hooks
+		#sum_of_all_sub_node_hook_time
+		#TODO: time per /X should only be calculated per node type (X/app, x/requirement, x/feature)
+		return "Run time: {:,.4f}ms or {:,.4f}ms/test; Time alottment (tests: {:.2%}, hooks: {:.2%}, anaphora:{:.2%})".format(node["runtime"], node["runtime"]/40, (node["child_during"])/node["runtime"], (node["child_hooks"]+node["hooks"])/node["runtime"], (node["child_anaphora"]+node["anaphora"])/node["runtime"])
 
-	def bubble(self, what):
-		if what in self.bubbles:
-			return True, self.bubbles[what]
-		else:
-			return False, None
+	def tracked_stats(self):
+		"""
+		Return a tuple of Stat objects that the reporter wants to use.
+
+		anaphora has a core set of tracked statistics, and a flexible system
+		for defining additional statistics as operations on other stats; anaphora
+		will compute statistics your reporter declares and save them alongside each
+		node in the database. This gives you some control over the tradeoffs between
+		having more statistics available, and time spent computing them. Your control
+		over what gets saved is absolute, but anaphora's core statistics still
+		accrue internally whether you use them or not.
+
+		Below is an example of a basic stat tuple. The first 5 are core statistics,
+		but the last two are composite calculations on these.
+		(
+			Stat(lambda _: _.runtime[C.SETUP].total_seconds()).called("setup").type("numeric"),
+			Stat(lambda _: _.runtime[C.BEFORE].total_seconds()).called("before").type("numeric"),
+			Stat(lambda _: _.runtime[C.DURING].total_seconds()).called("during").type("numeric"),
+			Stat(lambda _: _.runtime[C.AFTER].total_seconds()).called("after").type("numeric"),
+			Stat(lambda _: _.runtime[C.TEARDOWN].total_seconds()).called("teardown").type("numeric"),
+			#composite time stats
+			Stat(lambda _: _.stat("before") + _.stat("after")).called("hooks").type("numeric"),
+			Stat(lambda _: _.stat("hooks") + _.stat("setup") + _.stat("during") + _.stat("teardown")).called("runtime").type("numeric")
+		)
+
+		See the bdd.Stat class for a detailed discussion of how to compose stats and how they're computed.
+		"""
+		return ()
 
 
 class Minimal(Reporter):
@@ -211,41 +251,81 @@ class Default(Reporter):
 				print(self.summarized_node(child))
 
 class Tree(Reporter):
-	bubbles = {"exception": False}
 	def register_format_strings(self, fmt):
 		base = "{: <{pad}}{:}: {:}"
 		self.desc_str = [fmt.Fore.RED+base, base, fmt.Fore.YELLOW+base]
 		self.viz = "  "+fmt.Back.RED+" "+fmt.Back.RESET+" "
 
-	def report(self, node):
+	def report(self, run):
+
+		# print("SQL REPORT TEST SEQUENCE")
+		for exception in run.db.execute("SELECT * FROM exceptions;"):
+			print(exception["e_traceback"])
+			print(exception["e_file"])
+			print(exception["e_line"])
+		# print(run.db.execute("SELECT * FROM nouns;").fetchall())
+		print([dict(x) for x in run.db.execute("SELECT * FROM nodes WHERE description LIKE '%test%';").fetchall()])
+		# #print(run.db.execute("SELECT * FROM nodes JOIN nodes ON nodes.parent_id =  LIMIT 10;").fetchall())
+
+		# for row in run.db.tree():
+		# 	#print(dict(row))
+		# 	#print(("    "*depth)+str(nid)+"::"+desc)
+		# 	print(("    "*row["depth"])+str(row["id"])+"::"+row["description"])
+		# for row in run.db.nodes():
+		# 	print(row["id"])
+		# 	#print(("    "*depth)+str(nid)+"::"+desc)
+		# for row in run.db.tree(8):
+		# 	#print(dict(row))
+		# 	print(("    "*row["depth"])+str(row["id"])+"::"+row["description"])
+		print(dict(run.db.depths()))
+		#print(dict(run.db.execute("SELECT sum()")))
+		# print(dict(run.db.depth(2)))
+		# print(dict(run.db.node(2)))
+		# print(dict(run.db.depths(node_id=2)))
+		# print(run.db.depths(node_id=2).fetchall())
+		# print(dict(run.db.execute("SELECT sum(failures) FROM nodes;").fetchone()))
+		for index, node in enumerate(run.db.tree()):
+			# 0 == whole run; just compile overall things here.
+			if index == 0:
+				runtime_summary = self.runtime_summary(node)
+				test_stats = self.test_stats(node)
+			if node["depth"] > 0:
+				print(self.describe(node))
+			if node["e_message"]:
+				print("exception on this node")
+
+		print(runtime_summary)
+		print(test_stats)
+
+		return
 		#print("A total of {:} exceptions")
-		for child in node.children:
-			self.node_tree(child, 0, 1)
 
-		print("Errors:")
-		for child in node.children:
-			print(self.format_nested_exceptions(child))
+	def describe(self, node):
+		return "%5.3f > %5.3f > %5.3f" % (node["runtime"], node["anaphora"], node["during"])+ self.mark(node).format("", node["name"], node["description"], pad=node["depth"]*2)
 
-		print(self.runtime_summary(node))
+	def tracked_stats(self):
+		from .bdd import CONSTANTS as C
+		return (
+			Stat(lambda _: _.runtime[C.SETUP].total_seconds()).called("setup").type("numeric").aggregate_all(),
+			Stat(lambda _: _.runtime[C.BEFORE].total_seconds()).called("before").type("numeric").aggregate_all(),
+			Stat(lambda _: _.runtime[C.DURING].total_seconds()).called("during").type("numeric").aggregate_children(),
+			Stat(lambda _: _.runtime[C.AFTER].total_seconds()).called("after").type("numeric").aggregate_all(),
+			Stat(lambda _: _.checkpoint(C.TEARDOWN).total_seconds()).called("teardown").type("numeric").aggregate_all(),
+			#composite time stats
+			Stat(lambda _: _.stat("before") + _.stat("after")).called("hooks").type("numeric").aggregate_all(),
+			Stat(lambda _: _.stat("setup") + _.stat("teardown")).called("anaphora").type("numeric"),
+			Stat(lambda _: _.stat("hooks") + _.stat("anaphora") + _.stat("during") ).called("runtime").type("numeric").aggregate_children(),
+			#base test stats
+			Stat(lambda _: _.succeeded).called("succeeded").type("numeric"),
+			#composite test stats
+			#because these no longer bubble, they're often 0, which can make division by tests fail. unclear to me what a good fix is. Could maybe track one stat for local fail/succeed and another for cumulative descendant fail/succeed.
+		)
 
-		print(self.test_stats(node))
-
+	#the old logic here doesn't work, because we no longer accumulate failures/successes; anything that didn't explicitly fail/succeed should in theory end up yellow
 	def mark(self, node):
-		if node.stats.failed:
+		if node['succeeded'] == 0:
 			return self.desc_str[0]
-		elif node.stats.succeeded:
+		elif node['succeeded'] == 1:
 			return self.desc_str[1]
 		else:
 			return self.desc_str[2] # reserving this for an unrun test, though for now there's no such concept TODO: un-run tests can be kinda faked by raising an error in enter to skip the block.
-
-	def describe(self, node, indent, wrap_at):
-		return self.mark(node).format("", node.__class__.__name__, node.description, pad=indent*2)
-
-	def node_tree(self, node, indent, depth=float("inf")):
-		if depth > 1:
-			print(self.describe(node, indent, 80))
-			for child in node.children:
-				self.node_tree(child, indent+1, depth-1)
-		elif depth == 1:
-			print(self.describe(node, indent, 80))
-			print("{: >{pad}s}".format("...", pad=(indent+3)*2))
