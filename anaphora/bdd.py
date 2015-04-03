@@ -7,9 +7,7 @@ class CONSTANTS(object):
 	# runtime keys
 	BEFORE = 0
 	AFTER = 1
-	SETUP = 2
-	DURING = 3
-	TEARDOWN = 4
+	DURING = 0
 
 #exception mixins
 class Benign(object):
@@ -482,11 +480,9 @@ class RunnerMixin(object):
 		self.add()
 
 		self.start_coverage()
-		self.checkpoint(self.SETUP)
 		self.run_hooks(self.BEFORE)
 
 	def after_run(self):
-		self.checkpoint(self.DURING)
 		self.run_hooks(self.AFTER)
 		self.end_coverage()
 		#TODO: succeed if we haven't failed may not ideal
@@ -602,7 +598,6 @@ class Noun(CONSTANTS, RunnerMixin):
 		#self.cov = coverage.coverage(branch=True, omit=[__file__, "*anaphora/__init__.py"])
 		#self.cov = coverage.coverage(branch=True, omit=["*%s.py" % self.options.file, "*anaphora/__init__.py"])
 		#self.cov.start()
-		self.checkpoint(self.SETUP)
 
 		# we are now on the *user's* time, be fleet of foot
 		self.run_hooks(self.BEFORE)
@@ -613,7 +608,6 @@ class Noun(CONSTANTS, RunnerMixin):
 	def __exit__(self, exception_type, exception_value, tb):
 		skip = False
 		#print("exiting: %s" % self.description)
-		self.checkpoint(self.DURING)
 
 		if exception_type is not None:
 			#print("exception_type: %s" % exception_type)
@@ -697,7 +691,7 @@ class Noun(CONSTANTS, RunnerMixin):
 		return Stat.stat(name).compute(self)
 
 	def reset_runtime(self):
-		self.runtime = [datetime.timedelta() for x in range(5)]
+		self.runtime = datetime.timedelta()
 
 	def clean_up(self):
 		#TODO: knowledge-sink for tasks we have to perform to remove references to this node. Ideally we'll do this through putting a function on all of the objects that need to forget us which accepts a node object and scrubs references to it.
@@ -711,8 +705,8 @@ class Noun(CONSTANTS, RunnerMixin):
 		cls.db.clear_stats()
 		cls.db = None
 
-	def checkpoint(self, name):
-		temp = self.runtime[name] = datetime.datetime.utcnow() - self._checkpoint
+	def checkpoint(self):
+		temp = self.runtime = datetime.datetime.utcnow() - self._checkpoint
 		self._checkpoint = datetime.datetime.utcnow()
 		return temp
 
@@ -744,7 +738,6 @@ class Noun(CONSTANTS, RunnerMixin):
 			# save for use in our own exit func later.
 			self.hook_error_type = kind
 			self.hook_error = e
-		self.checkpoint(kind)
 
 	def report(self):
 		if self.reporter:

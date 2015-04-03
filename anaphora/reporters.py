@@ -146,7 +146,7 @@ class Reporter(object):
 		#return "{stats[1]:d} {stats[2]:d}".format(stats=node.stats.stats())
 
 	def runtime_summary(self, node):
-		print(dict(node))
+		#print(dict(node))
 		#a lot of these stats can be though of loosely as lies when looked at per node. For example, the "hooks" time of the top node only reflects time spent parsing *its* hooks, and not time spent processing hooks on any sub node. This isn't _wrong_ as much as it is prone to being unintuitive. Likewise, it's "during" time is a bit of a lie; it's claiming a "during" time for alllll of the sub nodes, including all of the overhead time spent parsing them. Again, this isn't entirely "wrong"; there's a case for it to be intuitive for the "during" segment to hold all sub-nodes.
 		#It's possible that the problem is just poor terminology. There may be a terminology that makes it clear--in one case we're counting everything that happens in the whole program while this node is running, while in another we're just presenting cumulative execution time of terminal nodes.
 		#There's a bigger question here of whether it's even possible to let users easily declare something like this latter cumulative type, or if we just have to write them in sql. In sql it seems quite doable. If we're aware they need some cumulative tracking it's also trivial to make them aggregate on their parent. It might also be the case that it makes no sense to try to track a stat like "tests" or even "succeeded" or "failed" in the aggregate because of the semantic issues they pose in our context. it might be best to just do retroactive per-noun stats. It's much more plausible to say that two apps passed at an average time of 150ms/app, or that 27 features passed at an average of 40ms/feature.
@@ -156,7 +156,7 @@ class Reporter(object):
 		#time_actually_spent_in_my_hooks
 		#sum_of_all_sub_node_hook_time
 		#TODO: time per /X should only be calculated per node type (X/app, x/requirement, x/feature)
-		return "Run time: {:,.4f}ms or {:,.4f}ms/test; Time alottment (tests: {:.2%}, hooks: {:.2%}, anaphora:{:.2%})".format(node["runtime"], node["runtime"]/40, (node["child_during"])/node["runtime"], (node["child_hooks"]+node["hooks"])/node["runtime"], (node["child_anaphora"]+node["anaphora"])/node["runtime"])
+		return "Run time: {:,.4f}s".format(node["during"])
 
 	def tracked_stats(self):
 		"""
@@ -304,20 +304,12 @@ class Tree(Reporter):
 		#print("A total of {:} exceptions")
 
 	def describe(self, node):
-		return "%5.3f > %5.3f > %5.3f" % (node["runtime"], node["anaphora"], node["during"])+ self.mark(node).format("", node["name"], node["description"], pad=node["depth"]*2)
+		return "%5.0fms|" % (node["during"]*1000)+ self.mark(node).format("", node["name"], node["description"], pad=node["depth"]*2)
 
 	def tracked_stats(self):
 		from .bdd import CONSTANTS as C
 		return (
-			Stat(lambda _: _.runtime[C.SETUP].total_seconds()).called("setup").type("numeric").aggregate_all(),
-			Stat(lambda _: _.runtime[C.BEFORE].total_seconds()).called("before").type("numeric").aggregate_all(),
-			Stat(lambda _: _.runtime[C.DURING].total_seconds()).called("during").type("numeric").aggregate_children(),
-			Stat(lambda _: _.runtime[C.AFTER].total_seconds()).called("after").type("numeric").aggregate_all(),
-			Stat(lambda _: _.checkpoint(C.TEARDOWN).total_seconds()).called("teardown").type("numeric").aggregate_all(),
-			#composite time stats
-			Stat(lambda _: _.stat("before") + _.stat("after")).called("hooks").type("numeric").aggregate_all(),
-			Stat(lambda _: _.stat("setup") + _.stat("teardown")).called("anaphora").type("numeric"),
-			Stat(lambda _: _.stat("hooks") + _.stat("anaphora") + _.stat("during") ).called("runtime").type("numeric").aggregate_children(),
+			Stat(lambda _: _.checkpoint().total_seconds()).called("during").type("numeric").aggregate_children(),
 			#base test stats
 			Stat(lambda _: _.succeeded).called("succeeded").type("numeric"),
 			#composite test stats
