@@ -4,6 +4,8 @@ from types import MethodType
 from .bdd import Stat
 
 colorama.init(autoreset=True)
+
+#TODO: say what? was this just for debug?
 def noneprint(arg):
 	if arg == None:
 		traceback.print_stack()
@@ -11,6 +13,7 @@ def noneprint(arg):
 		oldprint(arg)
 oldprint = print
 print = noneprint
+
 # stub that will remove colorama color codes for plaintext reporters
 class NoOp(object):
 	def __getattr__(self, name):
@@ -318,14 +321,15 @@ class Tree(Reporter):
 			#base test stats
 			Stat(lambda _: _.succeeded).called("succeeded").type("numeric"),
 			#composite test stats
-			#because these no longer bubble, they're often 0, which can make division by tests fail. unclear to me what a good fix is. Could maybe track one stat for local fail/succeed and another for cumulative descendant fail/succeed.
+			#because these no longer bubble, they're often 0, which can make division-by tests fail. unclear to me what a good fix is. Could maybe track one stat for local fail/succeed and another for cumulative descendant fail/succeed.
 		)
 
 	#the old logic here doesn't work, because we no longer accumulate failures/successes; anything that didn't explicitly fail/succeed should in theory end up yellow
+	#TODO: a notion of incomplete failure (i.e., one but not all of my children failed)
 	def mark(self, node):
 		if node['succeeded'] == 0:
 			return self.desc_str[0]
 		elif node['succeeded'] == 1:
 			return self.desc_str[1]
 		else:
-			return self.desc_str[2] # reserving this for an unrun test, though for now there's no such concept TODO: un-run tests can be kinda faked by raising an error in enter to skip the block.
+			return self.desc_str[2] #tests that didn't run (were skipped)

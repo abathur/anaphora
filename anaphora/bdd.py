@@ -1,6 +1,6 @@
 import traceback, sys, inspect, datetime, sqlite3, resource, itertools
 from collections import defaultdict
-import coverage
+#import coverage
 from anaphora import meta, cover
 
 class CONSTANTS(object):
@@ -132,7 +132,6 @@ class OurDb(sqlite3.Connection):
 			while tb:
 				blame = tb
 				tb = tb.tb_next
-			#TODO: error file is showing up as bdd.py when it shouldn't; have to rejigger
 			self.execute("INSERT INTO exceptions (e_class, e_message, e_traceback, e_line, e_file, node_id, ignore) VALUES (?, ?, ?, ?, ?, ?, ?);", (exception[0].__name__, str(exception[1]), "\n".join(err + [stack[0]]+stack[stackfrom:]), blame.tb_lineno, blame.tb_frame.f_code.co_filename, node.id, node.ignored))
 		except:
 			info = sys.exc_info()
@@ -163,7 +162,7 @@ class OurDb(sqlite3.Connection):
 	def track_stats(self, stats):
 		self.tracked_stats = stats
 		self.setup_stat_table(stats)
-		# not 100% sure we'll use this yet, but this means we use a single database file for test runs over time.
+		# TODO: not 100% sure we'll use this yet, but this means we use a single database file for test runs over time.
 		# if they indicate they're saving this database when we're done, we'll create a metadata table for them containing information about the conditions under which the test was run and key specific test runs against it (versus a more naive version where we just save timestamped database files for each run)
 		# self.execute(create meta)
 		...
@@ -187,11 +186,9 @@ class OurDb(sqlite3.Connection):
 			#print(e.args)
 
 	def update_node(self, node):
-		#if this is going to include sums, we need to either create an initial schema capable of holding them, or we need to make a separate table that we join at query
-		self.execute("WITH ag AS (SELECT * FROM aggregate WHERE parent_id={nodeid}) UPDATE nodes SET {query} WHERE nodes.id={nodeid};".format(query=", ".join((stat.update_sql for stat in self.tracked_stats)), nodeid=node.id), [stat.compute(node) for stat in self.tracked_stats]) #use parameters here, or compute ourselves a bit tediously?
+		self.execute("WITH ag AS (SELECT * FROM aggregate WHERE parent_id={nodeid}) UPDATE nodes SET {query} WHERE nodes.id={nodeid};".format(query=", ".join((stat.update_sql for stat in self.tracked_stats)), nodeid=node.id), [stat.compute(node) for stat in self.tracked_stats])
 
 	def add_noun(self, noun):
-		#print(noun.__name__)
 		cur = self.execute("INSERT INTO nouns (name) VALUES (?);", (noun.__name__,))
 		return cur.lastrowid
 
@@ -209,7 +206,7 @@ class QueryAPI(OurDb):
 
 	You are of course free to compose your own queries; this was one of the reasons for choosing an sql backend.
 	"""
-	#let's re-cycle common query parts
+	#re-cycle common query parts
 	query_templates = {
 		"tree": """
 			WITH RECURSIVE tree(id, depth) AS (
@@ -268,7 +265,7 @@ class QueryAPI(OurDb):
 			""")
 	}
 
-	#what do we still lack for traditional node-oriented queries?
+	#TODO: what do we still lack for traditional node-oriented queries?
 	#aggregating pass/fail counts for a depth, or for node descendants, etc. query explicit v. implicit failures.
 
 	def tree(self, node_id=None):
@@ -305,7 +302,7 @@ class QueryAPI(OurDb):
 		"""
 		return self.execute(self.queries["node_depth"], (node_id, depth)).fetchone() if node_id else self.execute(self.queries["depth"], (depth,)).fetchone()
 
-	#what kind of noun related stats might we want? a list of nouns, a list of nouns and the number of times they're used. a list of all nodes using a noun. A depth-list of each node using a noun and all of its descendants. A fail/succeed count for one or all nouns. A fail/succeed count for the trees below a noun.
+	#TODO: what kind of noun related stats might we want? a list of nouns, a list of nouns and the number of times they're used. a list of all nodes using a noun. A depth-list of each node using a noun and all of its descendants. A fail/succeed count for one or all nouns. A fail/succeed count for the trees below a noun.
 
 	def nouns(self):
 		return
@@ -371,7 +368,6 @@ class Stat(object):
 	how_to_create_me = "{name} {type} DEFAULT 0, child_{name} {type} DEFAULT 0"
 	#ideally this would just be child_{name}=ag.{name} but sqlite doesn't seem to support this syntax. Possible TODO if there's an sqlite language update in future versions.
 	how_to_update_me = "{name}=?, child_{name}=(SELECT ag_{name} FROM ag)"
-	#TODO: after initial release. there's a loophole here where there's one type of stat I want to aggregate without including the current level, and a different kind of stat I want to aggregate WITH the current level. The heuristic is when the outer level INCLUDES the inner level, we ONLY want to aggregate the inner-level parts. When the outer level NEVER includes the inner level, we want both. Applied, though, setup/before/after/teardown want both; during only wants the lower-levels. How can I differentiate? Is it possible for the stat to specify? These will likely be default/permadefs, so it's OK to use API features more complex than users are expected to deal with.
 	aggregator = "all"
 	how_to_aggregate = {"all": "total(child_{name})+total({name}) as ag_{name}", "children":"(CASE WHEN sum(child_{name}) IS NULL THEN total({name}) ELSE total(child_{name}) END) as ag_{name}"}
 
@@ -464,29 +460,22 @@ class RunnerMixin(object):
 	def load(self, module_strs):
 		self._modules = module_strs
 		self.les_iterables = map(lambda x: Module(x), module_strs)
-		#self.auto_import = map(lambda x: x.load(), self.delay_import)
 		return self
 
-	#return a Module object, but don't load it yet. What if they expect it to work that way?
-	#for module in modules(): [unloaded_module1, unloaded_module2]
-	#	for class in module.classes() unloaded_module1.classes()
-	#	for class in module.load().classes()
 	def __iter__(self):
-		print("__iter__ in %s" % self)
-		self.before_iter()
+		#print("__iter__ in %s" % self)
+		self.before_run()
 		return self
 
-	#import needs to only be run explicitly, AND iter needs to return Module objects?
 	def __next__(self):
-		print(self.les_iterables)
+		#print(self.les_iterables)
 		try:
 			return next(self.les_iterables)
 		except StopIteration:
-			self.after_iter()
+			self.after_run()
 			raise
 
 	def before_run(self):
-		#TODO: may be wrong/unnecessary
 		if not self.id:
 			self.__class__.id = self.db.add_noun(self.__class__)
 		self.id = self.db.add_node(self)
@@ -500,21 +489,12 @@ class RunnerMixin(object):
 		self.checkpoint(self.DURING)
 		self.run_hooks(self.AFTER)
 		self.end_coverage()
-		#fail if all children failed?
+		#TODO: succeed if we haven't failed may not ideal
 		if self.succeeded == None:
 			self.succeed()
 		self.db.update_node(self)
 		self.clean_up()
 
-	def before_iter(self):
-		print("also-ran in %s" % self)
-		self.before_run()
-
-	def after_iter(self):
-		print("after-ran in %s" % self)
-		self.after_run()
-
-	#import will run implicitly when .classes/functions/modules is called
 	def classes(self, predicate=None):
 		return itertools.chain(*[x.classes(predicate) for x in self])
 
@@ -534,7 +514,6 @@ class Noun(CONSTANTS, RunnerMixin):
 	environment_var_keys = None
 	hooks = None
 	parent = None
-	children = None
 	nouns = None
 	coverage = None
 	hook_error = None
@@ -543,7 +522,7 @@ class Noun(CONSTANTS, RunnerMixin):
 	skip_me = False
 	succeeded = None
 	ignored = None
-	#TODO: after initial. some method to specify file in case user wants to keep db
+	#LATERDO: after initial. some method to specify file in case user wants to keep db
 	#db = QueryAPI(':memory:', detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
 	db = QueryAPI('temp.db', detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
 	db.row_factory = sqlite3.Row
@@ -555,10 +534,10 @@ class Noun(CONSTANTS, RunnerMixin):
 		self.parent = self.current
 		self.description = desc
 		self.exceptions = []
-		self.children = []
 		self.nouns = []
-		#will be interesting to figure out how to db this, perhaps it can wait
-		self.coverage = {}
+		#LATERDO: will be interesting to figure out how to db this, perhaps it can wait
+		#coverage stats disabled for now
+		#self.coverage = {}
 		self.reset_runtime()
 
 		self.hooks = {self.BEFORE:[], self.AFTER:[]}
@@ -581,7 +560,7 @@ class Noun(CONSTANTS, RunnerMixin):
 			return None
 
 	def add(self):
-		print("adding %s which has parent: %s" % (self, self.parent))
+		#print("adding %s which has parent: %s" % (self, self.parent))
 		self._current.append(self)
 
 	def remove(self):
@@ -591,7 +570,6 @@ class Noun(CONSTANTS, RunnerMixin):
 		for name in names:
 			if isinstance(name, str):
 				new_class = type(name, (Noun,), {})
-				#TODO: should this be f_locals or f_globals?
 				inspect.currentframe().f_back.f_locals[name] = new_class
 				self.nouns.append(new_class)
 			elif isinstance(name, Noun):
@@ -603,19 +581,19 @@ class Noun(CONSTANTS, RunnerMixin):
 		self.options = options
 
 	def __enter__(self):
-		print("entering: %s" % self.description)
+		#print("entering: %s" % self.description)
 		if not self.id:
 			self.__class__.id = self.db.add_noun(self.__class__)
 
 		self.id = self.db.add_node(self)
 		self.environment_vars = inspect.currentframe().f_back.f_locals
 
-		#a "magic" var tentatively named _ is available with some special methods for controlling test in ways we can't otherwise.
+		#a "magic" var tentatively named _ is available with some special methods for controlling tests in ways we can't otherwise.
 		self.environment_vars['_'] = self
 		self.environment_var_keys = set(self.environment_vars.keys())
 		self.add()
 
-		#TODO: turn coverage back on.
+		#TODO: turn coverage back on?
 		#self.cov = coverage.coverage(branch=True, omit="*anaphora/__init__.py")#, , omit=["test.py", "*colorama*"]plugins=["plugin"]
 		# in the cli model this is parsed out of the command options...
 		# print(__file__)
@@ -628,20 +606,19 @@ class Noun(CONSTANTS, RunnerMixin):
 
 		# we are now on the *user's* time, be fleet of foot
 		self.run_hooks(self.BEFORE)
-		print("about to run: %s" % self.description)
+		#print("about to run: %s" % self.description)
 		self.entered = True
 		return self
 
-	#TODO has this partial rewrite introduced problems in where checkpoints are located?
 	def __exit__(self, exception_type, exception_value, tb):
 		skip = False
-		print("exiting: %s" % self.description)
+		#print("exiting: %s" % self.description)
 		self.checkpoint(self.DURING)
 
 		if exception_type is not None:
-			print("exception_type: %s" % exception_type)
+			#print("exception_type: %s" % exception_type)
 			if isinstance(exception_value, SkipNode):
-				print("caught skip for: %s" % self.description)
+				#print("caught skip for: %s" % self.description)
 				exception_type, exception_value, tb = (None,None,None)
 				skip = True
 			elif exception_type == SystemExit:
@@ -696,7 +673,7 @@ class Noun(CONSTANTS, RunnerMixin):
 		else:
 			self.succeed()
 
-		#clean up the namespace
+		#scrub namespace
 		for x in (self.environment_vars.keys() - self.environment_var_keys):
 			del self.environment_vars[x]
 
@@ -723,7 +700,7 @@ class Noun(CONSTANTS, RunnerMixin):
 		self.runtime = [datetime.timedelta() for x in range(5)]
 
 	def clean_up(self):
-		#knowledge-sink for tasks we have to perform to remove references to this node. Ideally we'll do this through putting a function on all of the objects that need to forget us which accepts a node object and scrubs references to it.
+		#TODO: knowledge-sink for tasks we have to perform to remove references to this node. Ideally we'll do this through putting a function on all of the objects that need to forget us which accepts a node object and scrubs references to it.
 		#likely suspects: OurDb
 		#individual stat caches
 		self.db.clean_up(self)
@@ -739,8 +716,8 @@ class Noun(CONSTANTS, RunnerMixin):
 		self._checkpoint = datetime.datetime.utcnow()
 		return temp
 
-	# the db will convert True/False and return 1/0 on query
-	# so we're just going to stick to what the db wants instead of forcing a
+	# the db converts True/False and returns 1/0 on query
+	# so going to stick to what the db wants instead of forcing a
 	# conversion going in and another coming out
 	# a skipped node will have a value of None, which the db api will preserve
 	def succeed(self):
@@ -762,9 +739,9 @@ class Noun(CONSTANTS, RunnerMixin):
 			for hook in self.hooks[kind]:
 				hook(self)
 		except Exception as e:
-			# can't raise here or it'll terminate with statement and send
-			# the error up to parent's __exit__; we still need the error, so
-			# save it and use it in our own exit func later.
+			# can't raise here or it'll terminate with statement and pass
+			# error up to parent's __exit__; we still need the error, so
+			# save for use in our own exit func later.
 			self.hook_error_type = kind
 			self.hook_error = e
 		self.checkpoint(kind)
@@ -775,8 +752,8 @@ class Noun(CONSTANTS, RunnerMixin):
 		else:
 			return 'nein reportage'
 
-	## "special" functions for controlling some specific tests
 
+	## "special" functions for controlling some specific tests
 	def ignore(self):
 		self.ignored = True
 
@@ -784,8 +761,6 @@ class Noun(CONSTANTS, RunnerMixin):
 		"""Skip execution of a test node."""
 		self.reset_runtime()
 		# TODO: Are there any other clean-up tasks we need?
-		# self.db.update_node(self)
-		# self.clean_up()
 		raise SkipNode(self)
 
 
@@ -803,12 +778,9 @@ def convert(converter):
 		return match
 	return matching
 
-#if this backs out into Noun itself, we can use our regular grammar and do things like:
-#for test in goal("parse xml").modules([strs]).classes(regex)
-##TODO: don't think I'm using this, but I can't tell if it's vestigial or incubating
-class Modules(Noun):
-	def __init__(self, desc, module_strs, *args, **kwargs):
-		super().__init__(desc, *args, **kwargs)
+#TODO: I may be lacking two sorts of god-mode here:
+	# a folder selector for running all python modules in a directory? Can python's default behavior with blank __init__.py just be leveraged here?
+	# an executable runner
 
 class TestRunner(Noun):
 	"""
@@ -829,9 +801,6 @@ class TestRunner(Noun):
 		name += ob.__name__
 		super().__init__(name, *args, **kwargs)
 
-	#TODO: there's probably a lot of refactor work to fit SQL and shit in here.
-	#TODO: Error handling may need twerk? dunno, it's so different structurally than the CM
-	#TODO: full review of the enter/exit and this run routine to see if there are good ways to refactor them both or if they just need to be very different.
 	def run(self, *args, **kwargs):
 		self.before_run()
 		ran = None
@@ -840,10 +809,6 @@ class TestRunner(Noun):
 			ran = self.execute(*args, **kwargs)
 			self.succeed()
 		except Exception as e:
-			print("You actually expect me to clean up around here?") # TODO?
-			#record the exception,
-			#mark the failure,
-			#but then swallow the exception so's we can continue.
 			self.fail()
 
 		self.after_run()
@@ -852,22 +817,21 @@ class TestRunner(Noun):
 	def execute(self, *args, **kwargs):
 		raise NotImplementedError
 
-#there are two main cases for how modules need to work. x.modules().classes() needs the modules to go ahead and get imported so we can operate on class, but module in modules() would ideally delay this execution so we can do module.run() which itself handles the hooks. This is also important in the context of not having a bunch of erroneous timing data for modules().classes(). This is quite the conundrum, since both use cases make use of next(self.iter). I guess the only real option is to change .classes()/etc. as they're the only ones that can elect not to rely on next(self)
-#
-#I'm so far removed from this that I now have to talk myself back into understanding it. The basic problem is that we need a way to either import immediately, or import lazily, and part of the base reason for this is that in some case just importing a file is sufficient to run a test, while in other cases the tests have to be explicitly called.
 
 class Callable(TestRunner):
 	runnable = True
 	def execute(self, *args, **kwargs):
 		return self.ob(*args, **kwargs)
 
+
 class Function(Callable):
 	...
+
 
 class Method(Callable):
 	...
 
-#ostensibly I have to instantiate a class?
+
 class Class(TestRunner):
 	@property
 	def ob(self):
@@ -878,39 +842,22 @@ class Class(TestRunner):
 
 	@convert(Method)
 	def methods(self):
-	#this is returning a list without triggering my iterators, "Module" below will also have this same problem. So basically we never "enter" cls because we never use cls.run() (this also brings up the sub-question of what exactly cls.run() would even do, and whether or not cls.run() should be the way we approach this?)
-	#this implies there's mode A where we can just exec a class
-	#and mode B where we get its methods and exec them one by one?
-	#I think a way to hedge against this is to go ahead and use the same chain structure for all of these? This didn't quite work, but it's on the right track.
-	#We need an iterator to dole out the objects this would return, and we need to "enter" when we start acting on the iterator, and we need to "exit" when it runs out of shit.
-	#This either means we need a special iterator class, or we need to be stuffing the things this iterator wants to return into our object somewhere and using our existing iterator functionality to dole them out.
-	#i.e. self.serve_these = inspect.getmembers(...)
-	#return self
 		return inspect.getmembers(self.ob, inspect.ismethod)
 
-
-#This is Python. Don't bend over backwards to let them work with files instead of modules. Require a list of module strings.
-# How do we support intuitive chaining like this?
-# for class in Modules("anaphora.tests").classes()
-# 	class.blah
-# this is kinda like [x.classes(regex) for x in Modules(...)]
-# the key is that .classes() returns an iterator that will run over module1.classes(), module2.classes(), etc.
+#try to import the first time self.ob gets accessed and then yield the imported object
 class Module(TestRunner):
 	runnable = True
 	def __init__(self, module_str, *args, **kwargs):
 		self.delay_init = module_str
-		print(module_str)
+		self.lazy_constructor = self._construct()
 		super(TestRunner, self).__init__("", *args, **kwargs)
 
-	#try to import us the first time self.ob gets accessed.
 	@property
 	def ob(self):
-		self.construct()
-		return self._ob
+		return next(self.lazy_constructor)
 	@ob.setter
 	def ob(self, value):
 		self._ob = value
-
 
 	def construct(self):
 		temp = __import__(self.delay_init, {}, None, [], 0)
@@ -918,12 +865,16 @@ class Module(TestRunner):
 		self.description = temp.__name__
 		del self.delay_init
 
+	def _construct(self):
+		self.construct()
+		while True:
+			yield self._ob
+
 	def execute(self, *args, **kwargs):
 		return self.construct()
 
 	@convert(lambda x: Module(x))
 	def modules(self):
-		#this needs to be an object for sure by now
 		return inspect.getmembers(self.ob, inspect.ismodule)
 
 	@convert(Class)

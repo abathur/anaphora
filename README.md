@@ -1,25 +1,30 @@
 _anaphora_
-========
+==========
 
-_anaphora_ is an expressive, flexible, agnostic testing scaffold.
+**An agnostic, flexibly-expressive scaffold for structured testing*
 
-## Another Python testing module, really?
-My inital experience with bdd was through a JS project which used Jasmine (by way of an extension which provides a more expressive syntax).
+_anaphora_ is for adding structure and semantics to your test runs. It doesn't come with strong opinions about what grammar, meaning, or kind of tests will be right for your teams and projects. Instead, _anaphora_ lets you define these as you go.
 
-I went looking for a Python BDD library that made the same kind of sense, but it felt like the existing libraries struggle to adapt the concepts without breaking the expressive qualities that make them worthwhile in the first place. _anaphora_ is inspired by BDD, but its flexibility doesn't mean practicing BDD is a prerequisite.
+This agnosticism extends to what a test should look like. While the canonical test is written into the _anaphora_ file (with plain assertions or any assertion library you prefer), there's also a simple API for running tests elsewhere. This makes it easy to select, filter (via a predicate callable), and run:
+* all functions in a given module
+* only functions in a module that start with "test"
+* all methods on all classes
+* only methods that start with "test" on classes that end with "Test"
+* other command-line executables (like linters, tests for other languages in your project, etc.)
 
-## Grammar
-I realized as I was working out what grammar to use for _anaphora_, and evaluating the choices existing libraries make, that these choices can't help but make one library another either useful or useless, almost entirely based on whether the grammar it promotes fits the process of the individual or organization.
+Taken together, these features mean an _anaphora_ run could integrate linters with behavior, regression, and unit tests.
 
-_anaphora_ encourages users to play an active role in defining the grammar they'll use. In the longer run, _anaphora_ intends to bundle the most popular grammars for easier engagement by new users. Please send a pull request if you feel like you have a grammar useful to others. See the grammars directory for an example.
+## Getting started
+
+## Documentation
 
 ## Assertions
-_anaphora_ resists the urge to provide any out-of-the-box expressive assertion support (i.e., expect() or should(), etc.) because there are already projects doing a really good job of these in an array of grammars that will likely be acceptable. _anaphora_ instead aims to be compatible with these packages, and in lieu of direct support recommends:
+Even though you can use whatever assertions you like with _anaphora_, expressive assertions are probably the best fit. If you don't already have a favorite, these are a good place to start looking:
 - [ensure][ensure]
 - [sure][sure]
 - [expects][expects]
 
-Other assertion modules you may find worth a look include [PyHamcrest][PyHamcrest] and [PyShould][PyShould]
+Others you may find worth a look include: [PyHamcrest][PyHamcrest] and [PyShould][PyShould]
 
 [ensure]: https://github.com/kislyuk/ensure
 [sure]: https://github.com/gabrielfalcao/sure

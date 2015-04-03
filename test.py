@@ -1,6 +1,5 @@
 from anaphora import Anaphora
-print("TROLOLOLOL")
-assert Anaphora.children == Anaphora.nouns == [], "Anaphora object should have no history, yet."
+assert Anaphora.exceptions == Anaphora.nouns == [], "Anaphora object should have no history, yet."
 
 Anaphora.grammar(["boot"])
 
@@ -111,16 +110,10 @@ with app("Anaphora").grammar(["need", "goal", "requirement"]):
 
 
 		with goal("count successes/failures") as child:
-			_.skip() #TODO: If I find an excuse to provide access to more functions within this context, this may become _.skip()
+			_.skip()
 			assert child.successes == 0, "We should have no local successes." # TODO: CHECK STATS
 			assert Anaphora.failures == 1, "Previous local failure not recorded." # TODO: CHECK STATS
 			assert Anaphora.successes == 12, "Previous global success not recorded." # TODO: CHECK STATS
-
-		with goal("lolwut"):
-			assert 1 == 1
-		#TODO this is awkward now, since report is outside of the core
-		# with goal("and print a status report"):
-		# 	assert Anaphora.report() == Anaphora.report()
 
 	with need("queryable coverage statistics"):
 		with goal("coverage statistics are computed as tests run"):
@@ -138,12 +131,12 @@ with app("Anaphora").grammar(["need", "goal", "requirement"]):
 
 			wert = 9
 			for func in goal("run all functions").load(["test3"]).functions():
-				print("wert: %s" % wert)
+				#print("wert: %s" % wert)
 				wert = func.run(wert)
 			assert wert == 5, "Imported functions didn't run successfully."
 
 			for func in goal("run just functions matching a predicate").load(["test3"]).functions(lambda x: x == "test2"):
-				print(func.parent)
+				#print(func.parent)
 				wert = func.run(wert)
 			assert wert == 10, "Imported function didn't run successfully."
 
@@ -152,11 +145,11 @@ with app("Anaphora").grammar(["need", "goal", "requirement"]):
 			# 	method.run()
 			for cls in goal("run all methods indiscriminately").load(["test_classes"]).classes(lambda x: x == "JustMethods"):
 				#here we also kinda expect us to enter "cls" structurally, but this is neither a CM nor an iterator on cls, so we don't.
-				print("cls.parent:%s" % cls.parent)
+				#print("cls.parent:%s" % cls.parent)
 				for method in cls.methods():
 					#and then because we never "entered" cls before, when we call cls as an iterator here, we finally enter it?
-					print("method.parent:%s" % method.parent)
-					print("cls.parent:%s" % cls.parent)
+					#print("method.parent:%s" % method.parent)
+					#print("cls.parent:%s" % cls.parent)
 					method.run() #TODO: or run?
 
 			#TODO: ok, now the numbers have to add up right; either I've let untracked time creep in, or something is getting recorded wrong

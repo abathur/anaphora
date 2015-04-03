@@ -18,16 +18,12 @@ class MostlyMethods(object):
 		self.test /= 2
 
 	def test1(self):
-		print(self.test)
 		assert self.test == 100
 
 	def test2(self):
-		print(self.test)
-		assert 1 == 2
 		assert self.test == 5000
 
 	def test3(self):
-		print(self.test)
 		assert self.test == 250000
 
 
