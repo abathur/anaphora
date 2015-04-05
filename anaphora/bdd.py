@@ -1,4 +1,4 @@
-import traceback, sys, inspect, datetime, sqlite3, resource, itertools
+import traceback, sys, inspect, datetime, sqlite3, resource, itertools, re, subprocess
 from collections import defaultdict
 #import coverage
 from anaphora import meta, cover
@@ -18,6 +18,7 @@ class Benign(object):
 	"""
 	severity = "Benign exception"
 	terminal = False
+
 class Critical(object):
 	"""
 	Critical exceptions aren't quite fatal.
@@ -37,45 +38,67 @@ class Critical(object):
 		else:
 			return True
 
-	def terminate(self, exception):
-		print("")
-		print("")
-		print("Anaphora encountered an error which prevented a test from executing.")
-		print("")
-		traceback.print_exception(*exception)
-		print("")
-		sys.exit("terminating")
-
 #base exception types, not thrown
-class AnaphoraException(Exception):pass
+class AnaphoraException(Exception): pass
+
 class TestRunException(AnaphoraException):
-	template = "{severity} in {loc} of {node}:"
-	def __init__(self, node):
-		super().__init__(self.template.format(severity=self.severity,
-			loc=self.loc, node=node))
+	template = "{severity} in {node} at line {line} of {loc}:"
+	lineno = None
+	filename = None
+	node = None
+	#severity = "default"
+	initialized = False
+	extra_exception = []
+
+	def __init__(self, node, *args, **kwargs):
 		self.node = node
+		super().__init__()
 
-	def format_exception(self):
-		"""
-		Return a string containing a specially-formatted exception.
+	@property
+	def exception(self):
+	    return traceback.format_exception_only(self.__class__, self)
 
-		The _special_ part is just to remove anaphora's code from the traces.
-		"""
-		cause = self.__cause__
-		while cause.__cause__:
-			cause = cause.__cause__
+	@property
+	def traceback(self):
+	    return "\n".join(self.exception + self.extra_exception)
+
+	def initialize(self):
+		cause = self.__cause__ #this doesn't exist yet (it's added after init I guess)
 		#We can start on line 1 if it's a body test, or line 3 otherwise
-		stackfrom = 1 if isinstance(self, TestError) else 3
+		if cause:
+			stackfrom = 1 if isinstance(self, TestRunException) else 3
 
-		#a brief description of the error
-		err = traceback.format_exception_only(self.__class__, self)
+			#the error stack, from which we only want line 0, and 3+
+			stack = traceback.format_exception(cause.__class__, cause, cause.__traceback__)
+			tb = cause.__traceback__
 
-		#the error stack, from which we only want line 0, and 3+
-		stack = traceback.format_exception(cause.__class__, cause, cause.__traceback__)
-		return err + [stack[0]]+stack[stackfrom:]
+			while tb:
+				blame = tb
+				tb = tb.tb_next
+				# print("tb: %s" % blame)
+				# print("lineno %s" % blame.tb_lineno)
+				# print("filename %s" % blame.tb_frame.f_code.co_filename)
+
+			# print("")
+			# print("stack %s" % stack)
+			# print("")
+			#need the following; will any of these names clash?
+			self.lineno = blame.tb_lineno
+			self.filename = blame.tb_frame.f_code.co_filename
+			self.extra_exception = [stack[0]]+stack[stackfrom:]
+		else:
+			self.lineno = self.__traceback__.tb_lineno
+			self.filename = self.__traceback__.tb_frame.f_code.co_filename
+		self.initalized = True
+
+	def __str__(self):
+		if not self.initialized:
+			self.initialize()
+		return self.template.format(severity=self.severity, line=self.lineno,
+			loc=self.filename, node=self.node)
 
 
-class HookError(TestRunException, Critical):pass
+class HookError(TestRunException, Critical): pass
 
 #thrown exceptions
 class TestFailure(TestRunException, Benign):
@@ -114,26 +137,30 @@ class OurDb(sqlite3.Connection):
 		""")
 
 	#TODO: build some smart methods on the exceptions for handling most of this; these concepts have now been partially rehashed in three places now
+	#Yes. This is essential.
+	# def add_exception(self, node, exception):
+	# 	try:
+	# 		cause = exception[1].__cause__
+	# 		#We can start on line 1 if it's a body test, or line 3 otherwise
+
+	# 		stackfrom = 1 if isinstance(exception[1], TestFailure) else 3
+	# 		#a brief description of the error
+	# 		err = traceback.format_exception_only(exception[0], exception[1])
+
+	# 		#the error stack, from which we only want line 0, and 3+
+	# 		stack = traceback.format_exception(cause.__class__, cause, cause.__traceback__)
+	# 		tb = cause.__traceback__
+
+	# 		while tb:
+	# 			blame = tb
+	# 			tb = tb.tb_next
+	# 		self.execute("INSERT INTO exceptions (e_class, e_message, e_traceback, e_line, e_file, node_id, ignore) VALUES (?, ?, ?, ?, ?, ?, ?);", (exception[0].__name__, str(exception[1]), "\n".join(err + [stack[0]]+stack[stackfrom:]), blame.tb_lineno, blame.tb_frame.f_code.co_filename, node.id, node.ignored))
+	# 	except:
+	# 		info = sys.exc_info()
+	# 		traceback.print_exception(info[0], info[1], info[2])
+	#
 	def add_exception(self, node, exception):
-		try:
-			cause = exception[1].__cause__
-			#We can start on line 1 if it's a body test, or line 3 otherwise
-
-			stackfrom = 1 if isinstance(exception[1], TestFailure) else 3
-			#a brief description of the error
-			err = traceback.format_exception_only(exception[0], exception[1])
-
-			#the error stack, from which we only want line 0, and 3+
-			stack = traceback.format_exception(cause.__class__, cause, cause.__traceback__)
-			tb = cause.__traceback__
-
-			while tb:
-				blame = tb
-				tb = tb.tb_next
-			self.execute("INSERT INTO exceptions (e_class, e_message, e_traceback, e_line, e_file, node_id, ignore) VALUES (?, ?, ?, ?, ?, ?, ?);", (exception[0].__name__, str(exception[1]), "\n".join(err + [stack[0]]+stack[stackfrom:]), blame.tb_lineno, blame.tb_frame.f_code.co_filename, node.id, node.ignored))
-		except:
-			info = sys.exc_info()
-			traceback.print_exception(info[0], info[1], info[2])
+		self.execute("INSERT INTO exceptions (e_class, e_message, e_traceback, e_line, e_file, node_id, ignore) VALUES (?, ?, ?, ?, ?, ?, ?);", (exception.__class__.__name__, str(exception), exception.traceback, exception.lineno, exception.filename, node.id, node.ignored))
 
 	def setup_stat_table(self, stats):
 		#the comma in here is wrong if there are no tracked stats; either we need default tracking or that needs to be magicked
@@ -309,14 +336,15 @@ class QueryAPI(OurDb):
 		return
 
 	#ditto per exceptions
-	def counted_exceptions(self):
-		return self.execute("SELECT * FROM exceptions WHERE ignore != 1;")
+	def all_exceptions(self, count=False):
+		return self.execute("SELECT count(*) FROM exceptions;") if count else self.execute("SELECT * FROM exceptions;")
 
-	def ignored_exceptions(self):
-		return self.execute("SELECT * FROM exceptions WHERE ignore == 1;")
+	def ignored_exceptions(self, count=False):
+		return self.execute("SELECT count(*) FROM exceptions WHERE ignore == 1;") if count else self.execute("SELECT * FROM exceptions WHERE ignore == 1;")
 
-	def exceptions(self):
-		return self.execute("SELECT * FROM exceptions;")
+	def exceptions(self, count=False):
+		return  self.execute("SELECT count(*) FROM exceptions WHERE ignore != 1;") if count else self.execute("SELECT * FROM exceptions WHERE ignore != 1;")
+
 
 
 # Adapted from code by Oren Tirosh, MIT license per http://code.activestate.com/recipes/578231-probably-the-fastest-memoization-decorator-in-the-/
@@ -455,18 +483,24 @@ class RunnerMixin(object):
 
 	See the TestRunner class for details.
 	"""
+	before_ran = False
+
 	def load(self, module_strs):
 		self._modules = module_strs
 		self.les_iterables = map(lambda x: Module(x), module_strs)
+		self.before_run()
+		return self
+
+	def shell(self, shell_strs):
+		self.les_iterables = map(lambda x: Shell(x), shell_strs)
+		self.before_run()
 		return self
 
 	def __iter__(self):
-		#print("__iter__ in %s" % self)
 		self.before_run()
 		return self
 
 	def __next__(self):
-		#print(self.les_iterables)
 		try:
 			return next(self.les_iterables)
 		except StopIteration:
@@ -474,6 +508,8 @@ class RunnerMixin(object):
 			raise
 
 	def before_run(self):
+		if self.before_ran:
+			return
 		if not self.id:
 			self.__class__.id = self.db.add_noun(self.__class__)
 		self.id = self.db.add_node(self)
@@ -481,6 +517,7 @@ class RunnerMixin(object):
 
 		self.start_coverage()
 		self.run_hooks(self.BEFORE)
+		self.before_ran = True
 
 	def after_run(self):
 		self.run_hooks(self.AFTER)
@@ -491,17 +528,37 @@ class RunnerMixin(object):
 		self.db.update_node(self)
 		self.clean_up()
 
+	# def classes(self, predicate=None):
+	# 	return itertools.chain(*[x.classes(predicate) for x in self])
+
+	# def functions(self, predicate=None):
+	# 	return itertools.chain(*[x.functions(predicate) for x in self])
+
+	# def modules(self, predicate=None):
+	# 	return itertools.chain(*[x.modules(predicate) for x in self])
+
+	# def methods(self, predicate=None):
+	# 	return itertools.chain(*[x.methods(predicate) for x in self])
+
 	def classes(self, predicate=None):
-		return itertools.chain(*[x.classes(predicate) for x in self])
+		def classifier(node):
+			node.before_run()
+			iters = node.classes(predicate)
+			node.after_run()
+		self.les_iterables = itertools.chain(*map(lambda x: x.classes(predicate), self.les_iterables))
+		return self
 
 	def functions(self, predicate=None):
-		return itertools.chain(*[x.functions(predicate) for x in self])
+		self.les_iterables = itertools.chain(*map(lambda x: x.functions(predicate), self.les_iterables))
+		return self
 
 	def modules(self, predicate=None):
-		return itertools.chain(*[x.modules(predicate) for x in self])
+		self.les_iterables = itertools.chain(*map(lambda x: x.modules(predicate), self.les_iterables))
+		return self
 
 	def methods(self, predicate=None):
-		return itertools.chain(*[x.methods(predicate) for x in self])
+		self.les_iterables = itertools.chain(*map(lambda x: x.methods(predicate), self.les_iterables))
+		return self
 
 
 class Noun(CONSTANTS, RunnerMixin):
@@ -517,7 +574,7 @@ class Noun(CONSTANTS, RunnerMixin):
 	options = meta.config
 	skip_me = False
 	succeeded = None
-	ignored = None
+	ignored = 0
 	#LATERDO: after initial. some method to specify file in case user wants to keep db
 	#db = QueryAPI(':memory:', detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
 	db = QueryAPI('temp.db', detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
@@ -584,8 +641,8 @@ class Noun(CONSTANTS, RunnerMixin):
 		self.id = self.db.add_node(self)
 		self.environment_vars = inspect.currentframe().f_back.f_locals
 
-		#a "magic" var tentatively named _ is available with some special methods for controlling tests in ways we can't otherwise.
-		self.environment_vars['_'] = self
+		#a "magic" var tentatively named _ is available with some special methods for controlling tests in ways we can't otherwise? Meh. Make them manually name it to access this.
+		#self.environment_vars['_'] = self
 		self.environment_var_keys = set(self.environment_vars.keys())
 		self.add()
 
@@ -605,6 +662,7 @@ class Noun(CONSTANTS, RunnerMixin):
 		self.entered = True
 		return self
 
+		#TODO: decompose this so it's a little more self-documenting?
 	def __exit__(self, exception_type, exception_value, tb):
 		skip = False
 		#print("exiting: %s" % self.description)
@@ -620,50 +678,53 @@ class Noun(CONSTANTS, RunnerMixin):
 			elif isinstance(exception_value, TestError):
 				if exception_value.terminal:
 					return False
-
-			elif exception_type != AssertionError:
+			elif isinstance(exception_value, AssertionError):
+				#chain an error off the actual exception to add value
 				try:
-					raise TestError(self) from exception_value
-				except TestError as e:
-					self.exception(sys.exc_info())
-					if e.terminal:
-						raise
+					raise TestFailure(self) from exception_value
+				except TestFailure as e:
+					self.exception(e)
+					exception_value = e
 
 		# there was an error in a before hook, so we'll create a hook error based on it
 		# and add it to the list of exceptions for this node
 		if self.hook_error_type == self.BEFORE:
+			self.end_coverage()
 			try:
 				raise BeforeHookError(self) from self.hook_error
 			except BeforeHookError as e:
-				self.exception(sys.exc_info())
+				self.exception(e)
+				exception_type = BeforeHookError
+				exception_value = e
 				if e.terminal:
 					raise
 
 		self.run_hooks(self.AFTER)
 
 		if self.hook_error_type == self.AFTER:
+			self.end_coverage()
 			try:
 				raise AfterHookError(self) from self.hook_error
 			except AfterHookError as e:
-				self.exception(sys.exc_info())
+				self.exception(e)
+				exception_type = AfterHookError
+				exception_value = e
 				if e.terminal:
 					raise
 
-		if self.hook_error_type != None: #TODO: why the fuck does this break w/o this check?
-			self.end_coverage()
-
-		if exception_type is not None:
-			self.fail()
-
-			#chain an error off the actual exception to add value
-			try:
-				raise TestFailure(self) from exception_value
-			except TestFailure:
-				self.exception(sys.exc_info())
-		elif self.hook_error:
-			self.fail()
-		elif skip:
+		if skip:
 			pass
+		elif exception_type is not None:
+			self.fail()
+			if not isinstance(exception_value, TestRunException):
+				#chain an error off the actual exception to add value
+				try:
+					raise TestError(self) from exception_value
+				except TestError as e:
+					self.exception(e)
+					exception_value = e
+					if e.terminal:
+						raise
 		else:
 			self.succeed()
 
@@ -745,22 +806,33 @@ class Noun(CONSTANTS, RunnerMixin):
 		else:
 			return 'nein reportage'
 
-
 	## "special" functions for controlling some specific tests
-	def ignore(self):
-		self.ignored = True
-
 	def skip(self):
-		"""Skip execution of a test node."""
+		"""Skip execution of a node."""
 		self.reset_runtime()
 		# TODO: Are there any other clean-up tasks we need?
 		raise SkipNode(self)
 
+	# parts of our own test suite must be able to "fail" to properly test parts
+	# of Anaphora that deal with test failures. In order to pass our own test
+	# suite, we have to be able to ignore these failures.
+	def ignore(self):
+		"""
+		Node is executed and failure tracked, but node is marked as ignored.
 
-#jesus christ document this please
-#note that files provides all the hooks we'd want; before everything, after everything, before each import, after each import.
-import re, inspect
+		When using default reporters, failures on ignored nodes don't influence
+		the run's exit status. This is intended to let us collect information
+		from tests that aren't critical (for example, a linter that may require
+		significant work to comply with).
+
+		It's worth noting that custom reporters have complete control over whether
+		they report ignored nodes or allow them to influence the run status.
+		"""
+		self.ignored = 1
+
+
 def convert(converter):
+	"""Wrap module/class/func/method objects with a special node object."""
 	def matching(f):
 		def match(self, predicate=None):
 			if predicate:
@@ -801,8 +873,21 @@ class TestRunner(Noun):
 		try:
 			ran = self.execute(*args, **kwargs)
 			self.succeed()
+		except (AssertionError, subprocess.CalledProcessError) as e:
+			try:
+				raise TestFailure(self) from e
+			except TestFailure as e:
+				self.exception(e)
+				if e.terminal:
+					raise
 		except Exception as e:
-			self.fail()
+		#TODO: this is hungry; it eats all errors and won't help us debug any coding errors in external tests
+			try:
+				raise TestError(self) from e
+			except TestError as e:
+				self.exception(e)
+				if e.terminal:
+					raise
 
 		self.after_run()
 		return ran
@@ -853,7 +938,7 @@ class Module(TestRunner):
 		self._ob = value
 
 	def construct(self):
-		temp = __import__(self.delay_init, {}, None, [], 0)
+		temp = __import__(self.delay_init, {}, None, [1], 0)
 		self.ob = temp
 		self.description = temp.__name__
 		del self.delay_init
@@ -877,6 +962,18 @@ class Module(TestRunner):
 	@convert(Function)
 	def functions(self):
 		return inspect.getmembers(self.ob, inspect.isfunction)
+
+
+class Shell(TestRunner):
+	runnable = True
+
+	def __init__(self, ob, *args, **kwargs):
+		name = self.ob = ob
+		super(TestRunner, self).__init__(name, *args, **kwargs)
+
+	def execute(self, *args, **kwargs):
+		return subprocess.check_call(self.ob, shell=True)
+
 
 Anaphora = Noun("AnaphoraSingleton")
 

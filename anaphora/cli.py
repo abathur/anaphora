@@ -36,42 +36,42 @@ class CliRun(Noun):
 		print(objgraph.show_refs(objgraph.by_type("Noun"), filename='/home/anaphora/nounrefs2.png'))
 
 	def __exit__(self, exception_type, exception_value, tb):
-		"""Wrap Noun.__exit__, handle errors, report, clean up."""
-		super().__exit__(exception_type, exception_value, tb)
+		"""replace Noun.__exit__, handle errors, report, clean up."""
+		self.run_hooks(self.AFTER)
 		exit = 0
 		if exception_value:
 			if isinstance(exception_value, (KeyError, TypeError, ImportError)):
 				#this net may prove slightly too broad
-				exit = "This doesn't appear to be an Anaphora test file."
-				#still need to exit
-				out = [""]
+				import traceback
+				out = ["This doesn't appear to be an Anaphora test file."]
 				out += ["==================="] #TODO
-				out += exception_value.format_exception()
+				out += traceback.format_exception(exception_value.__class__, exception_value, exception_value.__traceback__, chain=True)
 				out += ["==================="] #TODO
-				#out += traceback.format_exception(e.__cause__.__class__, e.__cause__, e.__cause__.__traceback__, chain=True)
+				#out +=
 				#out += ["Anaphora encountered the above error which prevented a test from executing. Anaphora can treat this broken test as a simple test failure if run with the -p or --permissive flag."]
 				exit = "\n".join(out)
 			elif isinstance(exception_value, TestRunException):
 				#still need to exit
 				out = [""]
 				out += ["==================="] #TODO
-				out += exception_value.format_exception()
+				out += [exception_value.traceback]
 				out += ["==================="] #TODO
 				#out += traceback.format_exception(e.__cause__.__class__, e.__cause__, e.__cause__.__traceback__, chain=True)
 				out += ["Anaphora encountered the above error which prevented a test from executing. Anaphora can treat this broken test as a simple test failure if run with the -p or --permissive flag."]
 				exit = "\n".join(out)
 			else:
 				#If for some reason there's an unexpected error floating up here, let's make sure we arent' swallowing it.
+				print("Attencion!")
 				raise exception_value
 		else:
-			self.report()
-			if self.succeeded is not None:
-				exit = self.succeeded
-			#TODO: otherwise, we need to find some more specific way to specify that an exception shouldn't "count"
+			self.db.update_node(self)
+			exit = self.report()
+
+		#self.clean_up()
 		clean_up()
 		if self.__dev_debug:
 			self.__objgraphs()
-		sys.exit(exit) #TODO: is this comment true? # never gunna get here
+		sys.exit(exit)
 
 	#anaphora TODO: this may still not be right; it may also be possible to fold most of this into exit if done smrtly.
 	def run(self):
@@ -81,7 +81,6 @@ class CliRun(Noun):
 		Note that while the module object is returned, there is no
 		obvious use case for keeping the reference at this time.
 		"""
-		print(self.options.file)
 		#TODO: for some reason if we specify .py this will still import the right file but then throw an error. bog.
 		return __import__(self.options.file, {}, locals(), [], 0)
 

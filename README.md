@@ -14,6 +14,9 @@ This agnosticism extends to what a test should look like. While the canonical te
 
 Taken together, these features mean an _anaphora_ run could integrate linters with behavior, regression, and unit tests.
 
+## Requirements
+_anaphora_ requires Python 3 to run, and pip for Python 3 to install additional dependencies
+
 ## Getting started
 
 ## Documentation

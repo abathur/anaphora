@@ -11,10 +11,16 @@ class JustMethods(object):
 
 class MostlyMethods(object):
 	test = 1
-	def before_hook(self):
+	def before_class_hook(self):
+		pass
+
+	def after_class_hook(self):
+		pass
+
+	def before_method_hook(self):
 		self.test *= 100
 
-	def after_hook(self):
+	def after_method_hook(self):
 		self.test /= 2
 
 	def test1(self):
