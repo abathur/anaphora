@@ -1,5 +1,4 @@
 ## _anaphora_: An agnostic, flexibly-expressive scaffold for structured testing
-==========
 
 _anaphora_ is for adding structure and semantics to your test runs. It doesn't come with strong opinions about what grammar, meaning, or kind of tests will be right for your teams and projects. Instead, _anaphora_ lets you define these as you go.
 
