@@ -1,4 +1,4 @@
-## _anaphora_: An agnostic, flexibly-expressive scaffold for structured testing
+### _anaphora_: An agnostic, flexibly-expressive scaffold for structured testing
 
 _anaphora_ is for adding structure and semantics to your test runs. It doesn't come with strong opinions about what grammar, meaning, or kind of tests will be right for your teams and projects. Instead, _anaphora_ lets you define these as you go.
 
@@ -11,16 +11,16 @@ This agnosticism extends to what a test should look like. While the canonical te
 
 Taken together, these features mean an _anaphora_ run could integrate linters with behavior, regression, and unit tests.
 
-## Requirements
+### Requirements
 _anaphora_ requires Python 3 to run, and pip for Python 3 to install additional dependencies.
 
-## Getting started
+### Getting started
 _anaphora_ is still nascent enough that it isn't quite released and as such has no version. The 0.0.1 release will come as soon as _anaphora_ has been given a good workout, but a quick look in tests/* should be enough to show you how to put it through the paces yourself.
 
-## Documentation
+### Documentation
 Coming soon.
 
-## Assertions
+### Assertions
 Even though you can use whatever assertions you like with _anaphora_, expressive assertions are probably the best fit. If you don't already have a favorite, these are a good place to start looking:
 - [ensure][ensure]
 - [sure][sure]
