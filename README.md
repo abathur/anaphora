@@ -15,11 +15,13 @@ This agnosticism extends to what a test should look like. While the canonical te
 Taken together, these features mean an _anaphora_ run could integrate linters with behavior, regression, and unit tests.
 
 ## Requirements
-_anaphora_ requires Python 3 to run, and pip for Python 3 to install additional dependencies
+_anaphora_ requires Python 3 to run, and pip for Python 3 to install additional dependencies.
 
 ## Getting started
+_anaphora_ is still nascent enough that it isn't quite released and as such has no version. The 0.0.1 release will come as soon as _anaphora_ has been given a good workout, but a quick look in tests/* should be enough to show you how to put it through the paces yourself.
 
 ## Documentation
+Coming soon.
 
 ## Assertions
 Even though you can use whatever assertions you like with _anaphora_, expressive assertions are probably the best fit. If you don't already have a favorite, these are a good place to start looking:

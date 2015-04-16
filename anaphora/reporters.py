@@ -1,36 +1,30 @@
-import colorama, traceback, sys
-from .bdd import TestError
-from types import MethodType
-from .bdd import Stat
+import sys
+import colorama
+from .stats import Stat
 
 colorama.init(autoreset=True)
 
-#TODO: say what? was this just for debug?
-# def noneprint(arg):
-# 	if arg == None:
-# 		traceback.print_stack()
-# 	else:
-# 		oldprint(arg)
-# oldprint = print
-# print = noneprint
 
 # stub that will remove colorama color codes for plaintext reporters
-class NoOp(object):
+class NoOp(object):  # pylint: disable=too-few-public-methods
 	def __getattr__(self, name):
 		return ""
 
+
 # base class for all reporters is uncolored
-# TODO: Need a way to easily swap color modes and easily declare strings once.
-class ColorLlama(NoOp):
+# This is just a dummy obj to replace colorama with to uncolor things
+class ColorLlama(NoOp):  # pylint: disable=too-few-public-methods
 	Fore = NoOp()
 	Back = NoOp()
 	Style = NoOp()
 
+
 class Reporter(object):
-	viz = ""
+
 	"""
-	Base reporter class. The only strict requirements for subclasses is that they
-	must:
+	Base reporter class.
+
+	The only strict requirements for subclasses is that they must:
 	1. implement a report function which accepts a single argument, a copy of the
 	anaphora object being reported on.
 
@@ -43,9 +37,8 @@ class Reporter(object):
 	built as class or instance variables with all information that is knowable before
 	reporting-time.
 	"""
-	#TODO a syntax for declaring what information on the nodes this reporter will
-	#actually make use of, which the Noun class can use to skip tracking unused stats
-	#priority 1 is efficiency/time savings, and 2 is the usefulness of the syntax
+
+	viz = ""
 
 	def __init__(self, colorizer=colorama):
 		try:
@@ -54,43 +47,38 @@ class Reporter(object):
 			pass
 
 	def color(self):
-		global colorama
 		self.register_format_strings(colorama)
 
 	def uncolor(self):
-		global ColorLama
 		self.register_format_strings(ColorLlama)
 
 	def report(self, testrun):
 		raise NotImplementedError
 
-	def register_format_strings(self, fmt): #self, fmt
+	def register_format_strings(self, fmt):
 		raise NotImplementedError
 
 	def format_exception(self, exception):
 		"""Return a string containing a single exception."""
-		return "{:=^80}\n{:}".format(str(exception[1].node), "".join(self.format_test_exception(exception)))
+		raise NotImplementedError
 
 	@staticmethod
 	def format_summary(node, runtime=None, exceptions=None):
-		if exceptions == None:
+		if exceptions is None:
 			exceptions = node.db.exceptions(count=True)
-		if runtime == None:
+		if runtime is None:
 			runtime = node.db.execute("SELECT during FROM nodes where id=1;").fetchone()
-		return "Test run {:} in {:,.4f}s with {:} unignored exceptions.".format("failed" if exceptions else "passed", runtime, exceptions)
+		return "Anaphora run {:} in {:,.4f}s with {:} unignored exceptions.".format("failed" if exceptions else "passed", runtime, exceptions)
 
 	@staticmethod
 	def exit_status(exceptions):
 		return 3 if exceptions else 0
 
-	def tracked_stats(self):
-		"""Must return a tuple of stats this reporter wants tracked."""
-		raise NotImplementedError
-
 	@staticmethod
-	def tracked_stats(self):
-		#TODO ?
+	def tracked_stats():
+		# LATERDO: this doc needs a rework, but it can wait until I decide if/how these additional stats make a return
 		"""
+		WARNING: This doc is obsolete, but it can't be rewritten until some other things are settled.
 		Return a tuple of Stat objects that the reporter wants to use.
 
 		anaphora has a core set of tracked statistics, and a flexible system
@@ -114,67 +102,45 @@ class Reporter(object):
 			Stat(lambda _: _.stat("hooks") + _.stat("setup") + _.stat("during") + _.stat("teardown")).called("runtime").type("numeric")
 		)
 
-		See the bdd.Stat class for a detailed discussion of how to compose stats and how they're computed.
+		See the stats.Stat class for a detailed discussion of how to compose stats and how they're computed.
 		"""
-		return ()
+		raise NotImplementedError
 
+# LATERDO:
+# class Minimal(Reporter):
+# 	@classmethod
+# 	def report(cls, run):
+# 		exceptions = run.db.exceptions(count=True)
+# 		print(cls.format_summary(run, exceptions=exceptions))
 
-class Minimal(Reporter):
-	@classmethod
-	def report(cls, run):
-		exceptions = run.db.exceptions(count=True)
-		print(cls.format_summary(run, exceptions=exceptions))
 
 class Tree(Reporter):
-	#storing possibly useful tidbits commented out
-		# print(run.db.execute("SELECT * FROM nouns;").fetchall())
-		# print([dict(x) for x in run.db.execute("SELECT * FROM nodes WHERE description LIKE '%test%';").fetchall()])
-		# #print(run.db.execute("SELECT * FROM nodes JOIN nodes ON nodes.parent_id =  LIMIT 10;").fetchall())
-
-		# for row in run.db.tree():
-		# 	#print(dict(row))
-		# 	#print(("    "*depth)+str(nid)+"::"+desc)
-		# 	print(("    "*row["depth"])+str(row["id"])+"::"+row["description"])
-		# for row in run.db.nodes():
-		# 	print(row["id"])
-		# 	#print(("    "*depth)+str(nid)+"::"+desc)
-		# for row in run.db.tree(8):
-		# 	#print(dict(row))
-		# 	print(("    "*row["depth"])+str(row["id"])+"::"+row["description"])
-		#print(dict(run.db.depths()))
-		#print(dict(run.db.execute("SELECT sum()")))
-		# print(dict(run.db.depth(2)))
-		# print(dict(run.db.node(2)))
-		# print(dict(run.db.depths(node_id=2)))
-		# print(run.db.depths(node_id=2).fetchall())
-		# print(dict(run.db.execute("SELECT sum(failures) FROM nodes;").fetchone()))
-		# #print("A total of {:} exceptions")
-		# 			# if node["e_message"]:
-			# 	print("exception on this node")
-	#end tidbits
-
 	def register_format_strings(self, fmt):
 		base = "{: <{pad}}{:}: {:}"
-		self.desc_str = [fmt.Fore.RED+base, base, fmt.Fore.YELLOW+base, fmt.Fore.WHITE+base]
-		self.exception_str = fmt.Back.WHITE+"{:}"+fmt.Back.RESET+"\n" # "{:=^10}".format("penis")
-		self.viz = "  "+fmt.Back.RED+" "+fmt.Back.RESET+" "
+		self.desc_str = [
+			fmt.Fore.RED + base,
+			base,
+			fmt.Fore.YELLOW + base,
+			fmt.Fore.WHITE + base
+		]
+		# self.exception_str = '{cls}: {description}\n\nTraceback (most recent call last):\n\n  File "{file}", line {line}, in {context}\n    {code}\n{status}{output}'
+		self.viz = "  " + fmt.Back.RED + " " + fmt.Back.RESET + " "
 
-	@staticmethod
-	def format_exception(exception):
-		return exception['e_traceback']
+	# LATERDO: give this method massively more authority in dictating format and reduce the role of the .traceback property on the exception
+	def format_exception(self, exception):
+		output = exception['e_output']
+		output = '\n\nAdditionally, the following was captured from stdout:\n    {output}'.format(output="\n    ".join(output.splitlines())) if output else ''
+		return '{message}\n{traceback}{output}\n'.format(message=exception['e_message'], traceback=exception['e_traceback'], output=output)
 
 	def report(self, run):
-		#do something meaningful with all of our nodes
 		for index, node in enumerate(run.db.tree()):
-			# 0 == whole run; just compile overall things here.
+			# 0 == implicit node wrapping full run
 			if index == 0:
 				runtime = node['during']
 			if node["depth"] > 0:
 				print(self.format_node(node))
 
 		exceptions = 0
-		#do something meaningful with our exceptions
-		#TODO: this printing fucking sucks; change back to exceptions to debug
 		for exception in run.db.exceptions():
 			exceptions += 1
 			print("{:=^50}".format(" Exception %d " % exceptions))
@@ -185,21 +151,21 @@ class Tree(Reporter):
 		return self.exit_status(exceptions)
 
 	def format_node(self, node):
-		return "%5.0fms|" % (node["during"]*1000)+ self.mark(node).format("", node["name"], node["description"], pad=node["depth"]*2)
+		return "%5.0fms|" % (node["during"] * 1000) + self.mark(node).format("", node["name"], node["description"], pad=node["depth"] * 2)
 
 	@staticmethod
 	def tracked_stats():
-		from .bdd import CONSTANTS as C
 		return (
-			Stat(lambda _: _.checkpoint().total_seconds()).called("during").type("numeric").aggregate_children(),
-			#base test stats
+			Stat(lambda _: _.runtime.checkpoint("during").total_seconds()).called("during").type("numeric").aggregate_children(),
+			# base test stats
 			Stat(lambda _: _.succeeded).called("succeeded").type("integer"),
 			Stat(lambda _: _.ignored).called("ignore").type("integer"),
-			#composite test stats
-			#because these no longer bubble, they're often 0, which can make division-by tests fail. unclear to me what a good fix is. Could maybe track one stat for local fail/succeed and another for cumulative descendant fail/succeed.
+			# composite test stats
 		)
 
 	def mark(self, node):
+		# print(list(node))
+		# print((node['e_message'], node['ignore'], node['succeeded']))
 		if node['succeeded'] == 0:
 			if node['ignore'] == 1:
 				return self.desc_str[3]
@@ -207,4 +173,4 @@ class Tree(Reporter):
 		elif node['succeeded'] == 1:
 			return self.desc_str[1]
 		else:
-			return self.desc_str[2] #tests that didn't run (were skipped)
+			return self.desc_str[2]  # not run (read: skipped)
