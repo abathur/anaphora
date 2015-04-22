@@ -236,4 +236,7 @@ class QueryAPI(OurDb):
 		return self.execute("SELECT count(*) FROM exceptions WHERE ignore == 1;") if count else self.execute("SELECT * FROM exceptions WHERE ignore == 1;")
 
 	def exceptions(self, count=False):
-		return self.execute("SELECT count(*) FROM exceptions WHERE ignore != 1;") if count else self.execute("SELECT * FROM exceptions WHERE ignore != 1;")
+		return self.execute("SELECT count(*) FROM exceptions WHERE ignore == 0;") if count else self.execute("SELECT * FROM exceptions WHERE ignore == 0;")
+
+	def warnings(self, count=False):
+		return self.execute("SELECT count(*) FROM exceptions WHERE ignore == 2;") if count else self.execute("SELECT * FROM exceptions WHERE ignore == 2;")

@@ -7,7 +7,7 @@ setup(
 	name="anaphora",
 	author="Travis A. Everett",
 	author_email="travis.a.everett+anaphora@gmail.com",
-	install_requires=["colorama"],
+	install_requires=["colorama", "packaging"],
 	# test_requires=[],  # tdver, pep8, pep257, pylint?
 	packages=["anaphora"],
 	entry_points={

@@ -30,6 +30,9 @@ class TestRunException(AnaphoraException):
 	# === start property API === #
 	@property
 	def kind(self):
+		if self.node:
+			if self.node.ignored == 1:
+				return "Ignored{:}".format(self.__class__.__name__)
 		return self.__class__.__name__
 
 	@property
@@ -159,11 +162,16 @@ class SkipNode(TestRunException):
 # LATERDO:
 # * reporters should be able to handle most of the formatting for these (i.e., the fake reporter below needs to fall so tightly in line with real exceptions that it's plausible for them to do so.) The best version of this will require giving the reporter a swing at formatting every exception if it declares some function?
 # * evaluate whether informally calling this "TestFailure" is going to cause problems (i.e., do I need to lie when I insert it into the db, as well?)
-class ShellFailure(TestFailure):
+class CommandFailure(TestFailure):
 	exit_status = None
 
 	@property
 	def kind(self):
+		if self.node:
+			if self.node.ignored == 2:
+				return "TestWarning"
+			elif self.node.ignored == 1:
+				return "IgnoredTestFailure"
 		return "TestFailure"
 
 	@property

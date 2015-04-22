@@ -2,10 +2,21 @@
 import sys
 import argparse
 
+from packaging.version import Version
+
 from .meta import Config
 from .exceptions import TestRunException
 from . import reporters
 from .runners import Noun, clean_up
+
+
+class Stream(argparse.Action):  # pylint: disable=too-few-public-methods
+	def __call__(self, parser, namespace, values, option_string=None):
+		try:
+			verstring = values.readline().strip()
+			setattr(namespace, self.dest, Version(verstring))
+		except AttributeError:
+			setattr(namespace, self.dest, Version(values))
 
 
 class CliConfig(Config):
@@ -15,7 +26,7 @@ class CliConfig(Config):
 		parser.add_argument("module", help="Python module containing tests")
 		#
 		parser.add_argument("-p", "--permissive", action="store_true", help="count broken tests as simple test failures")
-		# LATERDO: parser.add_argument("-e", "--earmarks", action="store_true", nargs='?', default=sys.stdin)
+		parser.add_argument("-e", "--earmarks", nargs='?', const=sys.stdin, action=Stream)
 		save_choices = {
 			"archive": "save with datestamp in file name",
 			"replace": "save only most-recent run",

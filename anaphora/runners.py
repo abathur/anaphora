@@ -2,6 +2,8 @@ import inspect
 import subprocess
 import itertools
 import sys
+
+
 from anaphora import meta, exceptions
 import anaphora.utils
 from anaphora.stats import Stat
@@ -39,11 +41,6 @@ class RunnerMixin(object):
 	def load(self, module_strs):
 		self._modules = module_strs
 		self.les_iterables = map(Module, module_strs)
-		self.before_run()
-		return self
-
-	def shell(self, shell_strs):
-		self.les_iterables = map(Shell, shell_strs)
 		self.before_run()
 		return self
 
@@ -106,6 +103,23 @@ class RunnerMixin(object):
 		self.les_iterables = itertools.chain(*map(lambda x: x.methods(predicate), self.les_iterables))
 		return self
 
+	def commands(self, commands):
+		self.les_iterables = map(Command, commands)
+		self.before_run()
+		return self
+
+	# LATERDO: single-op versions of more of these?
+	# LATERDO: fix the warning/ignore API for these
+	@staticmethod
+	def command(command, warn=False):
+		obj = Command(command)
+		if warn:
+			obj.warn()
+		# obj.before_run()
+		ret = obj.run()
+		# obj.after_run()
+		return ret
+
 
 # LATERDO: pylint disable below
 class Noun(RunnerMixin):  # pylint: disable=too-many-instance-attributes
@@ -113,6 +127,7 @@ class Noun(RunnerMixin):  # pylint: disable=too-many-instance-attributes
 	hooks = None
 	coverage = None
 	environment = None
+	earmark = None
 
 	description = None
 	parent = None
@@ -168,6 +183,7 @@ class Noun(RunnerMixin):  # pylint: disable=too-many-instance-attributes
 	@staticmethod
 	def config(options):
 		Noun.options = options
+		Noun.earmark = anaphora.utils.Earmarks(options)
 		# print((cls, cls.options), file=sys.stderr)
 		anaphora.db.QueryAPI(options)
 
@@ -312,6 +328,15 @@ class Noun(RunnerMixin):  # pylint: disable=too-many-instance-attributes
 		else:
 			return 'nein reportage'
 
+	# def earmark(self, verstring):
+	# 	if SpecifierSet(verstring).contains(self.options.earmarks):
+	# 		# pass
+	# 		return True
+	# 	else:
+	# 		return False
+	# 		# self.skip()
+	# 	return self
+
 	# "special" functions for controlling some specific tests
 	def skip(self):
 		"""Skip execution of a node."""
@@ -333,6 +358,11 @@ class Noun(RunnerMixin):  # pylint: disable=too-many-instance-attributes
 		they report ignored nodes or allow them to influence the run status.
 		"""
 		self.ignored = 1
+		return self
+
+	def warn(self):
+		self.ignored = 2
+		return self
 
 
 def clean_up():
@@ -474,7 +504,7 @@ class Module(TestRunner):
 		return inspect.getmembers(self.test, inspect.isfunction)
 
 
-class Shell(TestRunner):
+class Command(TestRunner):
 	runnable = True
 
 	def __init__(self, test, *args, **kwargs):
@@ -490,8 +520,8 @@ class Shell(TestRunner):
 			# we want the first frame that isn't in this file
 			for frame in stack:
 				if inspect.getfile(frame[0]) != inspect.getfile(stack[0][0]):
-					self.exception(exceptions.ShellFailure(self, frame, output, status))
+					self.exception(exceptions.CommandFailure(self, frame, output, status))
 					self.fail()
 					break
 		self.capture_output()
-		return status
+		return status, output
