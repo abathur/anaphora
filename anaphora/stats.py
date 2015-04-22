@@ -1,20 +1,5 @@
 """Support tracking user-defined composable statistics."""
-
-
-# Adapted from code by Oren Tirosh, MIT license per http://code.activestate.com/recipes/578231-probably-the-fastest-memoization-decorator-in-the-/
-class CacheDict(dict):
-
-	"""
-	Memoize calls to a closure provided on init which accepts a single argument.
-	"""
-
-	def __init__(self, func):
-		self.func = func
-		super().__init__()
-
-	def __missing__(self, key):
-		ret = self[key] = self.func(key)
-		return ret
+from anaphora.utils import CacheDict
 
 
 class Stat(object):

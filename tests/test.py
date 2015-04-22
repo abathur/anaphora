@@ -147,6 +147,21 @@ with app("Anaphora").grammar(["need", "goal", "requirement"]):
 		for garol in requirement("run external test module").load(["tests.external"]):
 			assert garol.test.i_swear_i_am_the_external_tests() == True
 
-		for garol in requirement("run another executable as a test").shell(["pylint anaphora --disable=missing-docstring,", "pep8 anaphora --ignore=W191,E501"]):
+		for garol in requirement("run another executable as a test").commands(["pep8 anaphora --ignore=W191,E501"]):
 			garol.run()
 
+		with goal("run earmarks") as marker:
+			with requirement("only run tests that pass a version check") as lint:
+				pylint = []
+				# a single if/else would be more efficient
+				# but would make this test pointless
+				if lint.earmark(">=1"):
+					pylint.append(lint.command("pylint anaphora"))
+					lint.command("pep257 anaphora")
+
+				if lint.earmark("<1"):
+					pylint.append(lint.command("pylint anaphora --disable=missing-docstring,"))
+					lint.command("pep257 anaphora", warn=True)
+
+				assert len(pylint), "No earmarks were run."
+				assert len(pylint) < 2, "Earmark version constraint violated."

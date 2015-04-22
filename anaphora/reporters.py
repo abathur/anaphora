@@ -63,12 +63,14 @@ class Reporter(object):
 		raise NotImplementedError
 
 	@staticmethod
-	def format_summary(node, runtime=None, exceptions=None):
+	def format_summary(node, runtime=None, exceptions=None, warnings=None):
 		if exceptions is None:
 			exceptions = node.db.exceptions(count=True)
+		if warnings is None:
+			warnings = node.db.warnings(count=True)
 		if runtime is None:
 			runtime = node.db.execute("SELECT during FROM nodes where id=1;").fetchone()
-		return "Anaphora run {:} in {:,.4f}s with {:} unignored exceptions.".format("failed" if exceptions else "passed", runtime, exceptions)
+		return "Anaphora run {:} in {:,.4f}s with {:} unignored exceptions{:}.".format("failed" if exceptions else "passed", runtime, exceptions, " and {:} warnings".format(warnings) if warnings else "")
 
 	@staticmethod
 	def exit_status(exceptions):
@@ -146,7 +148,13 @@ class Tree(Reporter):
 			print("{:=^50}".format(" Exception %d " % exceptions))
 			print(self.format_exception(exception), file=sys.stderr)
 
-		print(self.format_summary(run, runtime, exceptions))
+		warnings = 0
+		for warning in run.db.warnings():
+			warnings += 1
+			print("{:=^50}".format(" Warning %d " % warnings))
+			print(self.format_exception(warning), file=sys.stderr)
+
+		print(self.format_summary(run, runtime, exceptions, warnings))
 
 		return self.exit_status(exceptions)
 
@@ -167,7 +175,7 @@ class Tree(Reporter):
 		# print(list(node))
 		# print((node['e_message'], node['ignore'], node['succeeded']))
 		if node['succeeded'] == 0:
-			if node['ignore'] == 1:
+			if node['ignore'] > 0:
 				return self.desc_str[3]
 			return self.desc_str[0]
 		elif node['succeeded'] == 1:

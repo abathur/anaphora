@@ -1,8 +1,41 @@
 import datetime
-from collections import defaultdict
-from anaphora import exceptions
-from io import StringIO
 import sys
+from collections import defaultdict
+from io import StringIO
+from packaging.specifiers import SpecifierSet
+
+from anaphora import exceptions
+
+
+# Adapted from code by Oren Tirosh, MIT license per http://code.activestate.com/recipes/578231-probably-the-fastest-memoization-decorator-in-the-/
+class CacheDict(dict):
+
+	"""
+	Memoize calls to a closure provided on init which accepts a single argument.
+	"""
+
+	def __init__(self, func):
+		self.func = func
+		super().__init__()
+
+	def __missing__(self, key):
+		ret = self[key] = self.func(key)
+		return ret
+
+
+class MemoizedSpecifierSet(SpecifierSet, CacheDict):
+	def __init__(self, specifier):
+		SpecifierSet.__init__(self, specifier)
+		CacheDict.__init__(self, self.contains)
+
+
+class Earmarks(CacheDict):
+	def __init__(self, options):
+		self.options = options
+		super().__init__(MemoizedSpecifierSet)
+
+	def __call__(self, specifier):
+		return self[specifier][self.options.earmarks]
 
 
 class CaptureOutput(list):
