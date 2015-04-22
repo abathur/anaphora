@@ -15,7 +15,7 @@ Taken together, these features mean an _anaphora_ run could integrate linters wi
 _anaphora_ requires Python 3 to run, and pip for Python 3 to install additional dependencies.
 
 ### Getting started
-_anaphora_ is still nascent enough that it isn't quite released and as such has no version. The 0.0.1 release will come as soon as _anaphora_ has been given a good workout, but a quick look in tests/* should be enough to show you how to put it through the paces yourself.
+_anaphora_ is still nascent enough that it isn't quite released and as such has no version. The initial tagged release will come as soon as _anaphora_ has been given a good workout, but a quick look in tests/* should be enough to show you how to put it through the paces yourself.
 
 ### Documentation
 Coming soon.
