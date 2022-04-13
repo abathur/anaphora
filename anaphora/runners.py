@@ -315,7 +315,7 @@ class Noun(RunnerMixin):  # pylint: disable=too-many-instance-attributes
     # a skipped node will have a value of None, which the db api will preserve
     def try_succeed(self):
         """Mark as succeeded if we haven't already failed."""
-        if self.succeeded is not 0:
+        if self.succeeded != 0:
             self.succeeded = 1
 
     # stats
